@@ -1,0 +1,48 @@
+ospab.os Business Source License 1.1
+
+Licensor: ospab 
+Software: ospab.os (including the AETERNA kernel, tomato orchestrator, and grape editor).
+
+Effective Date: February 18, 2026.
+
+1. Identity & Nomenclature
+
+All references to the software and its components must adhere to the following naming standards:
+    
+    The operating system: ospab.os (lowercase).
+    
+    The kernel: AETERNA (uppercase).
+    
+    The author: ospab (lowercase).
+    
+    Use of these names in derivative works must preserve this casing.
+
+2. License Grant
+
+The Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, and run the Software subject to the following conditions:
+
+    Non-Commercial Use: You may use the Software for any non-commercial purpose (personal projects, academic research, private testing).
+
+    Commercial Use: You may NOT use the Software for any commercial or production purpose that exceeds the Additional Use Grant.
+
+3. Additional Use Grant
+
+Commercial use is permitted ONLY under the following condition:
+
+    The Software is used in a local, single-node environment for development and testing of AI models, where no revenue is directly generated from the execution of the Software.
+
+    Any use by Business or Government entities for production inference, cloud services, or hardware distribution requires a separate Commercial Agreement from ospab.
+
+4. Change Date
+
+On January 1, 2029, or upon a public announcement by the Licensor, this License shall convert to the Apache License, Version 2.0. From that date forward, all commercial restrictions are lifted.
+
+5. Change License
+
+The license that will apply after the Change Date is the Apache License, Version 2.0.
+
+6. Intellectual Property & Model Weights
+
+This License does not grant any rights to the AI model weights processed within ospab.os. The AETERNA kernel's Capability-Based Isolation is designed to protect these assets; however, the Licensor provides no warranty regarding the absolute security of third-party IP.
+
+Copyright © 2026 ospab. All rights reserved.
