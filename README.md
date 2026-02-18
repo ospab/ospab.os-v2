@@ -47,6 +47,8 @@ ospab.os-v2/
 ├── vfs/                # Virtual File System with AI weight caching
 └── api/                # ospab_ai & POSIX compatibility layers
 
+```
+
 ## Development Roadmap
 
 ### Phase 1: Foundation
