@@ -60,4 +60,4 @@ ospab.os-v2/
 - [ ] Introduction of the Initial Tensor Dispatcher MVP.
 
 ---
-*Copyright © 2026 ospab project. All rights reserved.*
+*Copyright © 2026 ospab. All rights reserved.*
