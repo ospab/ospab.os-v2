@@ -1,3 +1,24 @@
-./ospab.os.docx
-./.cargo
-./.git
+# --- Word & Office Temp Files ---
+# Игнорируем временные файлы, которые создает Word
+~$*.docx
+~WRL*.tmp
+*.tmp
+
+# Игнорируем сам White Paper (если хочешь держать его вне репо)
+ospab.os.docx
+
+# --- Rust & Compilation ---
+# Игнорируем артефакты сборки ядра AETERNA
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# --- OS & IDE ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- Logs ---
+*.log
