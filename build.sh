@@ -18,8 +18,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 ISOS_DIR="$PROJECT_ROOT/isos"
 # Limine: put BOOTX64.EFI, limine-bios.sys, limine-bios-cd.bin in tools/limine/bin
-# From: https://github.com/limine-bootloader/limine/releases
-LIMINE_BIN_DIR="${LIMINE_BIN_DIR:-$PROJECT_ROOT/tools/limine/bin}"
+# Or set LIMINE_BIN_DIR to your limine-10.8.2/bin (e.g. ../limine-10.8.2/bin)
+if [ -z "$LIMINE_BIN_DIR" ]; then
+    if [ -d "$PROJECT_ROOT/tools/limine/bin" ]; then
+        LIMINE_BIN_DIR="$PROJECT_ROOT/tools/limine/bin"
+    elif [ -d "$PROJECT_ROOT/../limine-10.8.2/bin" ]; then
+        LIMINE_BIN_DIR="$PROJECT_ROOT/../limine-10.8.2/bin"
+    else
+        LIMINE_BIN_DIR="$PROJECT_ROOT/tools/limine/bin"
+    fi
+fi
 LIMINE_CONF_SRC="${LIMINE_CONF_SRC:-$PROJECT_ROOT/limine.conf}"
 TARGET="${TARGET:-}"
 ISO_ROOT="${ISO_ROOT:-/tmp/ospab_os_v2_iso_root}"
@@ -41,14 +49,16 @@ ISO_PATH="$ISOS_DIR/$ISO_NAME"
 echo "=== Building ospab.os v2 (AETERNA) — ISO #$NEXT_NUM ==="
 cd "$PROJECT_ROOT"
 
-# --- Build kernel (custom target needs build-std) ---
+# --- Build kernel (custom target needs build-std; -A warnings avoids nightly ICE on bin crate) ---
+export RUSTFLAGS="${RUSTFLAGS:--A warnings}"
 echo "--- Building kernel ---"
 if [ -n "$TARGET" ]; then
     cargo +nightly build --release --target "$TARGET" -Z build-std=core,alloc
     KERNEL_BIN="$PROJECT_ROOT/target/$TARGET/release/ospab_os"
 else
     cargo +nightly build --release -Z build-std=core
-    KERNEL_BIN="$PROJECT_ROOT/target/release/ospab_os"
+    # .cargo/config sets target = x86_64-ospab.json
+    KERNEL_BIN="$PROJECT_ROOT/target/x86_64-ospab/release/ospab_os"
 fi
 
 if [ ! -f "$KERNEL_BIN" ]; then
@@ -59,12 +69,32 @@ fi
 echo "Kernel built: $KERNEL_BIN"
 [ "$BUILD_ISO" = false ] && exit 0
 
-# --- Check Limine binaries ---
+# --- Ensure Limine binaries (build from limine-10.8.2 if missing) ---
+LIMINE_NEEDED=
+[ ! -f "$LIMINE_BIN_DIR/BOOTX64.EFI" ] && LIMINE_NEEDED=1
+[ ! -f "$LIMINE_BIN_DIR/limine-bios.sys" ] && LIMINE_NEEDED=1
+[ ! -f "$LIMINE_BIN_DIR/limine-bios-cd.bin" ] && LIMINE_NEEDED=1
+
+if [ -n "$LIMINE_NEEDED" ]; then
+    LIMINE_SRC="${LIMINE_SRC:-$PROJECT_ROOT/limine-10.8.2}"
+    if [ -f "$LIMINE_SRC/configure" ]; then
+        echo "--- Building Limine from $LIMINE_SRC ---"
+        mkdir -p "$PROJECT_ROOT/tools/limine/bin"
+        ( cd "$LIMINE_SRC" && ./configure --enable-bios --enable-bios-cd --enable-uefi-x86-64 && make -j"$(nproc 2>/dev/null || echo 2)" )
+        LIMINE_BUILT_BIN="$LIMINE_SRC/bin"
+        if [ -d "$LIMINE_BUILT_BIN" ] && [ -f "$LIMINE_BUILT_BIN/BOOTX64.EFI" ]; then
+            cp -f "$LIMINE_BUILT_BIN/BOOTX64.EFI" "$LIMINE_BUILT_BIN/limine-bios.sys" "$LIMINE_BUILT_BIN/limine-bios-cd.bin" "$PROJECT_ROOT/tools/limine/bin/"
+            [ -x "$LIMINE_BUILT_BIN/limine" ] && cp -f "$LIMINE_BUILT_BIN/limine" "$PROJECT_ROOT/tools/limine/bin/"
+            LIMINE_BIN_DIR="$PROJECT_ROOT/tools/limine/bin"
+            echo "--- Limine binaries copied to $LIMINE_BIN_DIR ---"
+        fi
+    fi
+fi
+
 if [ ! -f "$LIMINE_BIN_DIR/BOOTX64.EFI" ] || [ ! -f "$LIMINE_BIN_DIR/limine-bios.sys" ] || [ ! -f "$LIMINE_BIN_DIR/limine-bios-cd.bin" ]; then
     echo "ERROR: Limine binaries not found in $LIMINE_BIN_DIR" >&2
     echo "  Required: BOOTX64.EFI, limine-bios.sys, limine-bios-cd.bin" >&2
-    echo "  Get them from: https://github.com/limine-bootloader/limine/releases" >&2
-    echo "  Or build Limine and copy into tools/limine/bin/" >&2
+    echo "  Put limine-10.8.2 source in project root and run ./build.sh again, or copy from release." >&2
     exit 1
 fi
 
