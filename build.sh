@@ -49,15 +49,28 @@ ISO_PATH="$ISOS_DIR/$ISO_NAME"
 echo "=== Building ospab.os v2 (AETERNA) — ISO #$NEXT_NUM ==="
 cd "$PROJECT_ROOT"
 
+# --- Build DOOM C engine (if not already built) ---
+DOOM_LIB="$PROJECT_ROOT/target/doom/libdoom.a"
+if [ ! -f "$DOOM_LIB" ]; then
+    echo "--- Building DOOM C engine ---"
+    mkdir -p "$PROJECT_ROOT/target/doom"
+    bash "$PROJECT_ROOT/doom_engine/build_doom.sh" "$PROJECT_ROOT/target/doom" || {
+        echo "WARN: DOOM build failed; continuing without DOOM support"
+    }
+fi
+
 # --- Build kernel (custom target needs build-std; -A warnings avoids nightly ICE on bin crate) ---
 export RUSTFLAGS="${RUSTFLAGS:--A warnings}"
+if [ -f "$DOOM_LIB" ]; then
+    export RUSTFLAGS="$RUSTFLAGS -l static=doom -L $PROJECT_ROOT/target/doom"
+fi
 echo "--- Building kernel ---"
 if [ -n "$TARGET" ]; then
-    cargo +nightly build --release --target "$TARGET" -Z build-std=core,alloc
+    cargo +nightly build --release --target "$TARGET"
     KERNEL_BIN="$PROJECT_ROOT/target/$TARGET/release/ospab_os"
 else
-    cargo +nightly build --release -Z build-std=core
-    # .cargo/config sets target = x86_64-ospab.json
+    cargo +nightly build --release
+    # .cargo/config sets target = x86_64-ospab.json and build-std
     KERNEL_BIN="$PROJECT_ROOT/target/x86_64-ospab/release/ospab_os"
 fi
 
