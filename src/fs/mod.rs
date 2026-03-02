@@ -126,6 +126,8 @@ struct OpenFile {
     readable: bool,
     /// Write mode
     writable: bool,
+    /// True if data was written through this FD (needs disk sync on close)
+    dirty: bool,
 }
 
 /// Global file descriptor table
@@ -147,6 +149,7 @@ pub fn init() {
                 active: true, // reserved
                 readable: i == 0,   // stdin
                 writable: i >= 1,   // stdout, stderr
+                dirty: false,
             });
         }
         FD_TABLE = Some(fds);
@@ -336,6 +339,7 @@ pub fn sys_open(path: &str, flags: u64) -> i64 {
                     active: true,
                     readable,
                     writable,
+                    dirty: false,
                 };
                 return i as i64;
             }
@@ -350,6 +354,7 @@ pub fn sys_open(path: &str, flags: u64) -> i64 {
                 active: true,
                 readable,
                 writable,
+                dirty: false,
             });
             return fd as i64;
         }
@@ -415,6 +420,9 @@ pub fn sys_write(fd: usize, data: &[u8]) -> i64 {
 
         let path = fds[fd].path.clone();
         if write_file(&path, data) {
+            if let Some(fds_mut) = FD_TABLE.as_mut() {
+                fds_mut[fd].dirty = true;
+            }
             data.len() as i64
         } else {
             -1
@@ -432,9 +440,48 @@ pub fn sys_close(fd: usize) -> i64 {
         if fd < 3 || fd >= fds.len() || !fds[fd].active {
             return -1;
         }
+        let was_dirty = fds[fd].dirty;
         fds[fd].active = false;
+        fds[fd].dirty = false;
         fds[fd].path.clear();
         fds[fd].offset = 0;
+
+        // Auto-sync to disk if this FD had writes
+        if was_dirty {
+            crate::fs::disk_sync::sync_filesystem();
+        }
         0
+    }
+}
+
+/// Seek within a file descriptor.
+/// whence: 0 = SEEK_SET, 1 = SEEK_CUR, 2 = SEEK_END.
+/// Returns new offset or -1 on error.
+pub fn sys_seek(fd: usize, offset: i64, whence: i32) -> i64 {
+    unsafe {
+        let fds = match FD_TABLE.as_mut() {
+            Some(f) => f,
+            None => return -1,
+        };
+        if fd < 3 || fd >= fds.len() || !fds[fd].active {
+            return -1;
+        }
+
+        // Get file size for SEEK_END
+        let file_size = match read_file(&fds[fd].path) {
+            Some(data) => data.len() as i64,
+            None => 0i64,
+        };
+
+        let new_pos = match whence {
+            0 => offset,                           // SEEK_SET
+            1 => fds[fd].offset as i64 + offset,   // SEEK_CUR
+            2 => file_size + offset,                // SEEK_END
+            _ => return -1,
+        };
+
+        if new_pos < 0 { return -1; }
+        fds[fd].offset = new_pos as usize;
+        new_pos
     }
 }

@@ -400,25 +400,23 @@ extern "C" fn exception_dispatch(saved_state: *const u8, vector: u64) {
     }
     
     // Write detailed diagnostic to serial (no format! to avoid recursion)
-    unsafe {
-        crate::arch::x86_64::serial::write_str("\r\n[FATAL] CPU Exception: ");
-        crate::arch::x86_64::serial::write_str(name);
-        crate::arch::x86_64::serial::write_str(" (vector ");
-        serial_dec(vector);
-        crate::arch::x86_64::serial::write_str(")\r\n");
-        
-        crate::arch::x86_64::serial::write_str("  Error code: 0x");
-        serial_hex(error_code);
-        crate::arch::x86_64::serial::write_str("\r\n");
-        
-        crate::arch::x86_64::serial::write_str("  Fault RIP:  0x");
-        serial_hex(fault_rip);
-        crate::arch::x86_64::serial::write_str("\r\n");
-        
-        crate::arch::x86_64::serial::write_str("  Fault RSP:  0x");
-        serial_hex(fault_rsp);
-        crate::arch::x86_64::serial::write_str("\r\n");
-    }
+    crate::arch::x86_64::serial::write_str("\r\n[FATAL] CPU Exception: ");
+    crate::arch::x86_64::serial::write_str(name);
+    crate::arch::x86_64::serial::write_str(" (vector ");
+    serial_dec(vector);
+    crate::arch::x86_64::serial::write_str(")\r\n");
+    
+    crate::arch::x86_64::serial::write_str("  Error code: 0x");
+    serial_hex(error_code);
+    crate::arch::x86_64::serial::write_str("\r\n");
+    
+    crate::arch::x86_64::serial::write_str("  Fault RIP:  0x");
+    serial_hex(fault_rip);
+    crate::arch::x86_64::serial::write_str("\r\n");
+    
+    crate::arch::x86_64::serial::write_str("  Fault RSP:  0x");
+    serial_hex(fault_rsp);
+    crate::arch::x86_64::serial::write_str("\r\n");
     
     panic!("CPU Exception");
 }
@@ -520,6 +518,17 @@ pub fn kb_irq_read() -> Option<u8> {
     }
 }
 
+/// Write a scancode into the keyboard ring buffer (for USB HID injection).
+/// Called by the XHCI driver to feed translated scancodes into the same
+/// pipeline used by the PS/2 keyboard IRQ handler.
+pub fn kb_buffer_write(scancode: u8) {
+    unsafe {
+        let write_idx = KB_BUFFER_WRITE & (KB_BUFFER_SIZE - 1);
+        KB_BUFFER[write_idx] = scancode;
+        KB_BUFFER_WRITE = KB_BUFFER_WRITE.wrapping_add(1);
+    }
+}
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -554,6 +563,7 @@ fn serial_dec(mut val: u64) {
     }
 }
 
+#[allow(dead_code)]
 fn draw_hex_fb(val: u64) {
     const HEX: [u8; 16] = *b"0123456789ABCDEF";
     let mut v = val;

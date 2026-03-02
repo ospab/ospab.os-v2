@@ -14,8 +14,8 @@
  * Uses MMIO (BAR0). Descriptors in static memory, accessed via HHDM.
  * 8 TX descriptors, 8 RX descriptors, each with 2K data buffers.
  */
+#![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
 
 // ─── PCI IDs ───────────────────────────────────────────────────────────────
 const E1000_IDS: &[(u16, u16)] = &[

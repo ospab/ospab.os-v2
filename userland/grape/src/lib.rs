@@ -32,6 +32,7 @@ use alloc::vec::Vec;
 // ─── Editor state ───────────────────────────────────────────────────────────
 
 /// Maximum number of lines in a file
+#[allow(dead_code)]
 const MAX_LINES: usize = 4096;
 
 /// A single line of text
@@ -616,8 +617,8 @@ fn refresh_screen(state: &EditorState) {
     // Position physical cursor
     let cursor_screen_y = (state.cy - state.row_off + 1) as u64;
     let cursor_screen_x = (state.cx - state.col_off) as u64;
-    let px = cursor_screen_x * framebuffer::CHAR_WIDTH;
-    let py = cursor_screen_y * framebuffer::CHAR_HEIGHT;
+    let _px = cursor_screen_x * framebuffer::CHAR_WIDTH;
+    let _py = cursor_screen_y * framebuffer::CHAR_HEIGHT;
 
     // Draw cursor block (inverted)
     if state.cy < state.lines.len() {
@@ -628,8 +629,8 @@ fn refresh_screen(state: &EditorState) {
             ' '
         };
         draw_at(
-            (state.cx - state.col_off),
-            (state.cy - state.row_off + 1),
+            state.cx - state.col_off,
+            state.cy - state.row_off + 1,
             ch,
             BG, // Inverted: black text
             FG_TEXT, // on white background
@@ -660,7 +661,7 @@ fn draw_title_bar(state: &EditorState, cols: usize) {
     draw_str_at(info_col, 0, &info, FG_TITLE, BG_TITLE);
 }
 
-fn draw_status_bar(state: &EditorState, row: usize, cols: usize) {
+fn draw_status_bar(state: &EditorState, row: usize, _cols: usize) {
     fill_row(row, FG_STATUS, BG_STATUS);
     if !state.status_msg.is_empty() {
         draw_str_at(1, row, &state.status_msg, FG_STATUS, BG_STATUS);
@@ -698,7 +699,7 @@ fn draw_help_bar(row: usize, cols: usize) {
 
 /// Display a prompt in the status bar and read a line of input.
 /// Returns None if the user pressed Escape/Ctrl+C.
-fn prompt(state: &mut EditorState, msg: &str) -> Option<String> {
+fn prompt(_state: &mut EditorState, msg: &str) -> Option<String> {
     let mut input = String::new();
     let rows = fb_rows();
     let cols = fb_cols();
@@ -733,9 +734,9 @@ fn prompt(state: &mut EditorState, msg: &str) -> Option<String> {
 
 // ─── Help screen ────────────────────────────────────────────────────────────
 
-fn show_help(state: &mut EditorState) {
+fn show_help(_state: &mut EditorState) {
     framebuffer::clear(BG);
-    let cols = fb_cols();
+    let _cols = fb_cols();
 
     fill_row(0, FG_TITLE, BG_TITLE);
     draw_str_at(2, 0, "grape Help", FG_TITLE, BG_TITLE);

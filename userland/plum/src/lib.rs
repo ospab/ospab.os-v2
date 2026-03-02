@@ -30,9 +30,11 @@ mod bash;
 // ─── Shell state ────────────────────────────────────────────────────────────
 
 /// Maximum environment variables
+#[allow(dead_code)]
 const MAX_VARS: usize = 64;
 
 /// Maximum aliases
+#[allow(dead_code)]
 const MAX_ALIASES: usize = 32;
 
 /// The shell state — persists across commands
@@ -103,6 +105,7 @@ const BG: u32      = 0x00000000;
 fn puts(s: &str) { framebuffer::draw_string(s, FG, BG); }
 fn ok(s: &str)   { framebuffer::draw_string(s, FG_OK, BG); }
 fn err(s: &str)  { framebuffer::draw_string(s, FG_ERR, BG); }
+#[allow(dead_code)]
 fn warn(s: &str) { framebuffer::draw_string(s, FG_WARN, BG); }
 fn dim(s: &str)  { framebuffer::draw_string(s, FG_DIM, BG); }
 
@@ -145,8 +148,6 @@ pub fn init() {
 /// Returns a list of (command, args) pairs to execute sequentially.
 /// If the command is a plum builtin, it is executed here and returns None.
 pub fn preprocess(input: &str) -> Option<String> {
-    let sh = shell();
-
     let input = input.trim();
     if input.is_empty() { return None; }
 

@@ -263,14 +263,13 @@ pub fn send_packet(data: &[u8], len: usize) {
 
         // Wait for TX to complete (OWN bit set by hardware)
         let mut timeout = 200000u32;
-        let mut final_status = 0u32;
+        let mut final_status = inl(IO_BASE + REG_TSD0 + (desc as u16) * 4);
         loop {
-            let status = inl(IO_BASE + REG_TSD0 + (desc as u16) * 4);
-            final_status = status;
-            if status & 0x8000 != 0 { break; } // TOK
-            if status & 0x4000_0000 != 0 { break; } // Abort
+            if final_status & 0x8000 != 0 { break; } // TOK
+            if final_status & 0x4000_0000 != 0 { break; } // Abort
             timeout -= 1;
             if timeout == 0 { break; }
+            final_status = inl(IO_BASE + REG_TSD0 + (desc as u16) * 4);
         }
 
         // Debug: log TX result

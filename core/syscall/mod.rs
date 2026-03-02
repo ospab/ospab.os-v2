@@ -176,7 +176,7 @@ pub fn init_syscall_msr() {
 
         // 3. LSTAR: entry point for SYSCALL instruction
         // For now, point to our minimal handler
-        wrmsr(MSR_LSTAR, syscall_entry_stub as u64);
+        wrmsr(MSR_LSTAR, syscall_entry_stub as *const () as u64);
 
         // 4. FMASK: clear IF (bit 9) on SYSCALL entry (disable interrupts)
         wrmsr(MSR_FMASK, 0x200); // mask IF

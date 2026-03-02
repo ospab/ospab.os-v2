@@ -16,8 +16,7 @@
  *   - READ SECTORS (28-bit LBA PIO)
  *   - WRITE SECTORS (28-bit LBA PIO)
  *   - Max 2^28 = 128 GiB addressable; covers all typical VM disk sizes
- */
-
+ */#![allow(dead_code)]
 use core::arch::asm;
 
 // ─── IDE I/O Ports ─────────────────────────────────────────────────────────
@@ -266,7 +265,7 @@ pub fn drive_info(idx: usize) -> Option<&'static DriveInfo> {
 }
 
 // ─── Select drive + set up LBA address ────────────────────────────────────
-fn select_drive_lba28(channel: u8, drive: u8, base: u16, ctrl: u16,
+fn select_drive_lba28(_channel: u8, drive: u8, base: u16, ctrl: u16,
                        lba: u32, count: u8) {
     let head = 0xE0 | ((drive & 1) << 4) | ((lba >> 24) as u8 & 0x0F);
     outb(base + ATA_REG_HEAD,    head);

@@ -98,16 +98,28 @@ pub fn disk_info_count_before(idx: usize, kind: DiskKind) -> usize {
     }
 }
 
-/// Read sectors from disk n (unified, handles ATA or AHCI)
+/// Read sectors from disk n (unified, handles ATA or AHCI).
+/// ATA: batched in 128-sector chunks to stay within u8 limit.
 pub fn read(disk: usize, lba: u64, count: u32, buf: &mut [u8]) -> bool {
     let d = match disk_info(disk) { Some(d) => *d, None => return false };
+    if buf.len() < count as usize * 512 { return false; }
     match d.kind {
         DiskKind::Ata => {
-            // Find the ATA drive index (count ATA disks before this one)
             let ata_idx = unsafe {
                 DISKS[..disk].iter().filter(|d| d.kind == DiskKind::Ata).count()
             };
-            ata::read_sectors(ata_idx, lba as u32, count as u8, buf)
+            const BATCH: u32 = 128;
+            let mut done = 0u32;
+            while done < count {
+                let batch = (count - done).min(BATCH) as u8;
+                let off = done as usize * 512;
+                let end = off + batch as usize * 512;
+                if !ata::read_sectors(ata_idx, (lba + done as u64) as u32, batch, &mut buf[off..end]) {
+                    return false;
+                }
+                done += batch as u32;
+            }
+            true
         }
         DiskKind::Ahci => {
             let ahci_idx = unsafe {
@@ -118,15 +130,28 @@ pub fn read(disk: usize, lba: u64, count: u32, buf: &mut [u8]) -> bool {
     }
 }
 
-/// Write sectors to disk n
+/// Write sectors to disk n.
+/// ATA: batched in 128-sector chunks to stay within u8 limit.
 pub fn write(disk: usize, lba: u64, count: u32, data: &[u8]) -> bool {
     let d = match disk_info(disk) { Some(d) => *d, None => return false };
+    if data.len() < count as usize * 512 { return false; }
     match d.kind {
         DiskKind::Ata => {
             let ata_idx = unsafe {
                 DISKS[..disk].iter().filter(|d| d.kind == DiskKind::Ata).count()
             };
-            ata::write_sectors(ata_idx, lba as u32, count as u8, data)
+            const BATCH: u32 = 128;
+            let mut done = 0u32;
+            while done < count {
+                let batch = (count - done).min(BATCH) as u8;
+                let off = done as usize * 512;
+                let end = off + batch as usize * 512;
+                if !ata::write_sectors(ata_idx, (lba + done as u64) as u32, batch, &data[off..end]) {
+                    return false;
+                }
+                done += batch as u32;
+            }
+            true
         }
         DiskKind::Ahci => {
             let ahci_idx = unsafe {

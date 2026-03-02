@@ -14,6 +14,7 @@ static PING_RECEIVED: AtomicBool = AtomicBool::new(false);
 static PING_SEQ: AtomicU64 = AtomicU64::new(0);
 static PING_RTT_TICKS: AtomicU64 = AtomicU64::new(0);
 static mut PING_SEND_TICK: u64 = 0;
+#[allow(dead_code)]
 static mut PING_TTL: u8 = 0;
 
 /// Handle incoming ICMP packet

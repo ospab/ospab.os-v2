@@ -197,7 +197,7 @@ fn cmd_meminfo() {
         print_str("Heap used: ");
         print_size(used as u64);
         print_str(" / ");
-        print_size(ospab_os::mm::heap::HEAP_SIZE as u64);
+        print_size(ospab_os::mm::heap::heap_size() as u64);
         print_line("");
     }
 }

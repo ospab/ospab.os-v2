@@ -14,9 +14,10 @@
  *   - Read/Write using FIS (Frame Information Structure)
  *   - 28-bit and 48-bit LBA
  *   - One command slot per port (simple, no NCQ)
- */
-
+ */#![allow(dead_code)]
 use core::ptr;
+
+use crate::mm::r#virtual::{self as vmm, FLAG_NX, FLAG_PCD, FLAG_PWT, FLAG_WRITABLE};
 
 // ─── PCI scan for AHCI ────────────────────────────────────────────────────
 const PCI_CLASS_STORAGE: u8  = 0x01;
@@ -79,6 +80,10 @@ const FIS_TYPE_DEV_BITS: u8 = 0xA1;
 
 const SECTOR_SIZE: usize = 512;
 const MAX_PORTS: usize = 32;
+
+// Map AHCI MMIO as uncacheable to avoid register writes being cached
+const AHCI_UC_VIRT_BASE: u64 = 0xFFFF_FF10_0000_0000;
+const AHCI_MMIO_PAGES: u64 = 2; // 8 KiB covers HBA + ports
 
 // ─── FIS structures ────────────────────────────────────────────────────────
 #[repr(C, packed)]
@@ -216,6 +221,12 @@ fn phys_to_virt(phys: u64) -> usize {
     (phys + hhdm) as usize
 }
 
+fn virt_to_phys_hhdm(vaddr: usize) -> u64 {
+    // Convert a higher-half direct mapping (HHDM) pointer back to physical
+    let hhdm = crate::arch::x86_64::boot::hhdm_offset().unwrap_or(0xFFFF_8000_0000_0000);
+    (vaddr as u64).wrapping_sub(hhdm)
+}
+
 fn delay(n: u32) {
     for _ in 0..n { unsafe { core::arch::asm!("pause"); } }
 }
@@ -259,7 +270,22 @@ pub fn init() -> usize {
                 let abar_phys = (bar5 & !0xF) as u64;
                 if abar_phys == 0 { continue; }
 
-                unsafe { HBA_VIRT = phys_to_virt(abar_phys); }
+                // Map ABAR as UC/WC-disabled to ensure register writes hit hardware
+                let abar_page = abar_phys & !0xFFF;
+                let mut mapped = true;
+                for page in 0..AHCI_MMIO_PAGES {
+                    let v = AHCI_UC_VIRT_BASE + page * 4096;
+                    let p = abar_page + page * 4096;
+                    if !vmm::map_page_current(v, p, FLAG_WRITABLE | FLAG_PCD | FLAG_PWT | FLAG_NX) {
+                        mapped = false;
+                        break;
+                    }
+                }
+                if !mapped {
+                    crate::arch::x86_64::serial::write_str("[AHCI] Failed to map ABAR UC\r\n");
+                    continue;
+                }
+                unsafe { HBA_VIRT = (AHCI_UC_VIRT_BASE + (abar_phys & 0xFFF)) as usize; }
 
                 crate::arch::x86_64::serial::write_str("[AHCI] Controller at bus=");
                 serial_dec(bus as u64); crate::arch::x86_64::serial::write_byte(b',');
@@ -357,6 +383,38 @@ fn start_port(port: u32) {
     }
     let cmd = port_read(port, PORT_CMD);
     port_write(port, PORT_CMD, cmd | PORT_CMD_FRE | PORT_CMD_ST);
+}
+
+fn wait_ci_clear(port: u32, mask: u32, label: &str) -> bool {
+    // 18.2 Hz → ~55 ms per tick; 1000 ms ≈ 19 ticks
+    let start_ms = crate::arch::x86_64::idt::timer_ticks();
+
+    loop {
+        let ci = port_read(port, PORT_CI);
+        if ci & mask == 0 { return true; }
+
+        let is = port_read(port, PORT_IS);
+        if is & (1 << 30) != 0 {
+            crate::arch::x86_64::serial::write_str("[AHCI] Task File Error while waiting for CI (" );
+            crate::arch::x86_64::serial::write_str(label);
+            crate::arch::x86_64::serial::write_str(")\r\n");
+            return false;
+        }
+
+        if crate::arch::x86_64::idt::timer_ticks().wrapping_sub(start_ms) >= 19 {
+            let serr = port_read(port, PORT_SERR);
+            crate::arch::x86_64::serial::write_str("[AHCI] CI stuck after 1000ms (" );
+            crate::arch::x86_64::serial::write_str(label);
+            crate::arch::x86_64::serial::write_str(") IS=0x");
+            serial_hex32(is);
+            crate::arch::x86_64::serial::write_str(" SERR=0x");
+            serial_hex32(serr);
+            crate::arch::x86_64::serial::write_str("\r\n");
+            return false;
+        }
+
+        delay(200); // small pause to avoid hammering the bus
+    }
 }
 
 fn init_port(port: u32, ai: usize) -> bool {
@@ -478,22 +536,9 @@ fn run_pio_command(port: u32, ai: usize, cmd: u8, lba: u64, count: u32,
     // Issue command (slot 0)
     port_write(port, PORT_CI, 1);
 
-    // Wait for completion
-    let mut timeout = 5_000_000u32;
-    loop {
-        let ci = port_read(port, PORT_CI);
-        if ci & 1 == 0 { break; } // Slot 0 cleared = done
-        let is = port_read(port, PORT_IS);
-        if is & (1 << 30) != 0 { // Task file error
-            crate::arch::x86_64::serial::write_str("[AHCI] Task File Error\r\n");
-            return false;
-        }
-        timeout -= 1;
-        if timeout == 0 {
-            crate::arch::x86_64::serial::write_str("[AHCI] Command timeout\r\n");
-            return false;
-        }
-        delay(1);
+    // Wait for completion (1s deadline with debug dump)
+    if !wait_ci_clear(port, 1, "PIO") {
+        return false;
     }
 
     true
@@ -540,6 +585,61 @@ pub fn write_sectors(drive_idx: usize, lba: u64, count: u32, data: &[u8]) -> boo
     unsafe { DATA_BUF[..total].copy_from_slice(&data[..total]); }
 
     run_pio_command(port, ai, ATA_CMD_WRITE_DMA_EX, lba, count, count, false)
+}
+
+/// Zero-copy DMA write using a physical buffer allocated by the PMM.
+/// `buffer_phys` must point to a physically contiguous region of at least
+/// `count * 512` bytes. Returns true on success.
+pub fn dma_write(drive_idx: usize, lba: u64, count: u32, buffer_phys: u64) -> bool {
+    if count == 0 { return true; }
+
+    let d = match drive_info(drive_idx) { Some(d) => *d, None => return false };
+    let port = d.port_idx as u32;
+    let ai   = d.alloc_idx as usize;
+
+    unsafe {
+        let ct = &mut CMD_TABLES[ai];
+        for b in ct.cfis.iter_mut() { *b = 0; }
+
+        // Build H2D FIS for WRITE DMA EXT
+        ct.cfis[0] = FIS_TYPE_REG_H2D;
+        ct.cfis[1] = 1 << 7; // Command
+        ct.cfis[2] = ATA_CMD_WRITE_DMA_EX;
+        ct.cfis[3] = 0;
+        ct.cfis[4] = (lba & 0xFF) as u8;
+        ct.cfis[5] = ((lba >> 8) & 0xFF) as u8;
+        ct.cfis[6] = ((lba >> 16) & 0xFF) as u8;
+        ct.cfis[7] = 0x40; // LBA mode
+        ct.cfis[8] = ((lba >> 24) & 0xFF) as u8;
+        ct.cfis[9] = ((lba >> 32) & 0xFF) as u8;
+        ct.cfis[10] = ((lba >> 40) & 0xFF) as u8;
+        ct.cfis[11] = 0;
+        ct.cfis[12] = (count & 0xFF) as u8;
+        ct.cfis[13] = ((count >> 8) & 0xFF) as u8;
+
+        // PRD: point directly to caller's physical buffer
+        ct.prdt[0].dba_lo = buffer_phys as u32;
+        ct.prdt[0].dba_hi = (buffer_phys >> 32) as u32;
+        ct.prdt[0]._rsv   = 0;
+        let byte_count = (count as usize * SECTOR_SIZE - 1) as u32;
+        ct.prdt[0].dbc    = byte_count | (1 << 31); // IOC
+
+        // Command header
+        let cfis_len_dw = 5u16;
+        CMD_LISTS[ai].0[0].flags  = cfis_len_dw | (1u16 << 6); // write bit
+        CMD_LISTS[ai].0[0].prdtl  = 1;
+        CMD_LISTS[ai].0[0].prdbc  = 0;
+
+        port_write(port, PORT_IS, 0xFFFFFFFF);
+        port_write(port, PORT_CI, 1);
+
+        // Poll for completion (1s deadline with IS/SERR dump)
+        if !wait_ci_clear(port, 1, "DMA") {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn serial_hex32(v: u32) {

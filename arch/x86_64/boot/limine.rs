@@ -373,6 +373,49 @@ pub fn modules() -> Option<ModuleIterator> {
     }
 }
 
+// ─── RSDP (ACPI) request ────────────────────────────────────────────────────
+
+#[repr(C)]
+pub struct RsdpResponse {
+    pub revision: u64,
+    /// Physical address of the RSDP structure
+    pub address: *const u8,
+}
+
+#[repr(C)]
+pub struct RsdpRequest {
+    pub id: [u64; 4],
+    pub revision: u64,
+    pub response: *mut RsdpResponse,
+}
+
+unsafe impl Sync for RsdpRequest {}
+
+#[used]
+#[link_section = ".limine_requests"]
+static mut RSDP_REQUEST: RsdpRequest = RsdpRequest {
+    id: [
+        LIMINE_COMMON_MAGIC[0],
+        LIMINE_COMMON_MAGIC[1],
+        0xc5e77b6b397e7b43,
+        0x27637845accdcf3c,
+    ],
+    revision: 0,
+    response: ptr::null_mut(),
+};
+
+/// Get the RSDP physical address from the bootloader.
+pub fn rsdp_address() -> Option<*const u8> {
+    unsafe {
+        if RSDP_REQUEST.response.is_null() {
+            None
+        } else {
+            let addr = (*RSDP_REQUEST.response).address;
+            if addr.is_null() { None } else { Some(addr) }
+        }
+    }
+}
+
 pub fn get_module(index: usize) -> Option<&'static LimineFile> {
     unsafe {
         if MODULE_REQUEST.response.is_null() {

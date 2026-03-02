@@ -35,7 +35,7 @@ override BUILD_UEFI_IA32 :=
 override BUILD_UEFI_AARCH64 := 
 override BUILD_UEFI_RISCV64 := 
 override BUILD_UEFI_LOONGARCH64 := 
-override BUILD_UEFI_CD := no
+override BUILD_UEFI_CD := yes
 override BUILD_BIOS_PXE := no
 override BUILD_BIOS_CD := yes
 

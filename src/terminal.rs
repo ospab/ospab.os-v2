@@ -15,6 +15,18 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ospab_os::arch::x86_64::framebuffer;
 use ospab_os::arch::x86_64::keyboard;
 use ospab_os::klog;
+use ospab_os::{fs, acpi, axon};
+
+// Builtin command list for Tab completion (includes AXON)
+const BUILTINS: &[&str] = &[
+    "help", "echo", "clear", "ver", "version", "uname", "ls", "pwd", "cd",
+    "cat", "mkdir", "touch", "rm", "save", "write", "whoami", "hostname",
+    "date", "about", "meminfo", "free", "uptime", "dmesg", "lsmem",
+    "lspci", "lsblk", "fdisk", "ping", "ifconfig", "ip", "ntpdate", "sync",
+    "dump_disk", "reboot", "shutdown", "poweroff", "halt", "install", "history",
+    "tutor", "grape", "tomato", "seed", "bash", "doom", "export", "alias",
+    "unalias", "env", "set", "unset", "type", "source", "plum",
+];
 
 extern crate alloc;
 
@@ -82,36 +94,102 @@ fn init_cwd() {
 }
 
 fn cwd_str() -> &'static str {
-    unsafe { core::str::from_utf8_unchecked(&CWD[..CWD_LEN]) }
+    ospab_os::plum::cwd()
 }
 
 /// Resolve a user-supplied path to an absolute path.
-/// - If path starts with '/', it's already absolute.
-/// - If path is "~", return "/".
-/// - Otherwise, join with CWD.
+/// Delegates to plum shell's path resolution (uses PWD env).
 fn resolve_path(path: &str) -> alloc::string::String {
-    if path == "~" {
-        return alloc::string::String::from("/");
-    }
-    if path.starts_with('/') {
-        // Already absolute — normalize trailing slash
-        let mut s = alloc::string::String::from(path);
-        while s.len() > 1 && s.ends_with('/') {
-            s.pop();
+    ospab_os::plum::resolve_path(path)
+}
+
+/// Return a slice of the current input up to cursor as &str
+fn current_input_prefix() -> &'static str {
+    unsafe { core::str::from_utf8_unchecked(&INPUT_BUFFER[..INPUT_CURSOR]) }
+}
+
+/// Attempt to complete the token before the cursor. Returns number of bytes inserted.
+fn try_complete() -> Option<usize> {
+    // Find token bounds (last space/tab)
+    let prefix = current_input_prefix();
+    let token_start = prefix.rfind(' ').map(|p| p + 1).unwrap_or(0);
+    let token = &prefix[token_start..];
+
+    // If empty token, nothing to do
+    if token.is_empty() { return Some(0); }
+
+    // If token contains '/', complete path
+    let (dir, base) = if let Some(pos) = token.rfind('/') {
+        let dir = &token[..pos];
+        let base = &token[pos + 1..];
+        let mut abs = resolve_path(dir);
+        if abs.is_empty() { abs.push('/'); }
+        (abs, base)
+    } else {
+        (alloc::string::String::from(cwd_str()), token)
+    };
+
+    // Collect matches from filesystem
+    let mut matches: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+    if let Some(entries) = fs::readdir(&dir) {
+        for e in entries {
+            if e.name.starts_with(base) {
+                matches.push(e.name);
+            }
         }
-        return s;
     }
-    // Relative path: join with CWD
-    let cwd = cwd_str();
-    let mut abs = alloc::string::String::from(cwd);
-    if !abs.ends_with('/') {
-        abs.push('/');
+
+    // If token has no slash and is first token, also complete builtins and axon commands
+    let is_first_token = token_start == 0;
+    if is_first_token && !token.contains('/') {
+        for &b in BUILTINS {
+            if b.starts_with(token) { matches.push(alloc::string::String::from(b)); }
+        }
+        for &a in axon::command_list() {
+            if a.starts_with(token) { matches.push(alloc::string::String::from(a)); }
+        }
     }
-    abs.push_str(path);
-    while abs.len() > 1 && abs.ends_with('/') {
-        abs.pop();
+
+    // Deduplicate
+    matches.sort();
+    matches.dedup();
+
+    if matches.is_empty() {
+        return Some(0);
     }
-    abs
+
+    // Unique completion: insert remainder
+    if matches.len() == 1 {
+        let m = &matches[0];
+        if m.len() >= base.len() {
+            let suffix = &m[base.len()..];
+            unsafe {
+                let need = suffix.len();
+                if INPUT_LEN + need >= INPUT_BUFFER_SIZE { return Some(0); }
+                for i in (INPUT_CURSOR..INPUT_LEN).rev() {
+                    INPUT_BUFFER[i + need] = INPUT_BUFFER[i];
+                }
+                for (k, b) in suffix.as_bytes().iter().enumerate() {
+                    INPUT_BUFFER[INPUT_CURSOR + k] = *b;
+                }
+                INPUT_CURSOR += need;
+                INPUT_LEN += need;
+            }
+            return Some(suffix.len());
+        }
+        return Some(0);
+    }
+
+    // Multiple matches: show list and redraw line
+    puts("\n");
+    for m in &matches {
+        puts(m);
+        puts("  ");
+    }
+    puts("\n");
+    // Redraw prompt + input line
+    redraw_line();
+    Some(0)
 }
 
 /// Main terminal loop — never returns
@@ -149,7 +227,13 @@ pub fn run() -> ! {
 fn draw_prompt() {
     framebuffer::draw_string(PROMPT_USER, FG_PROMPT, BG);
     framebuffer::draw_string(PROMPT_SEP, FG, BG);
-    framebuffer::draw_string(PROMPT_PATH, FG_PATH, BG);
+    // Show live PWD from plum shell
+    let pwd = ospab_os::plum::cwd();
+    if pwd == "/" {
+        framebuffer::draw_string("~", FG_PATH, BG);
+    } else {
+        framebuffer::draw_string(pwd, FG_PATH, BG);
+    }
     framebuffer::draw_string(PROMPT_HASH, FG, BG);
     unsafe {
         let (x, y) = framebuffer::cursor_pos();
@@ -260,6 +344,20 @@ fn redraw_input_from(from: usize) {
         // Clear one trailing char (covers deletions)
         framebuffer::draw_char(' ', FG, BG);
         // Reposition to cursor
+        let (cx, cy) = input_screen_pos(INPUT_CURSOR);
+        framebuffer::set_cursor_pos(cx, cy);
+    }
+}
+
+/// Redraw prompt and the whole input line (used after listing completions)
+fn redraw_line() {
+    // Move to new line, redraw prompt and buffer
+    framebuffer::draw_char('\n', FG, BG);
+    draw_prompt();
+    unsafe {
+        for i in 0..INPUT_LEN {
+            framebuffer::draw_char(INPUT_BUFFER[i] as char, FG, BG);
+        }
         let (cx, cy) = input_screen_pos(INPUT_CURSOR);
         framebuffer::set_cursor_pos(cx, cy);
     }
@@ -401,18 +499,11 @@ fn read_line() -> &'static str {
                     }
 
                     '\t' => {
-                        // Tab: insert 4 spaces at cursor
-                        let spaces = 4usize.min(INPUT_BUFFER_SIZE - 1 - INPUT_LEN);
-                        if spaces > 0 {
-                            for i in (INPUT_CURSOR..INPUT_LEN).rev() {
-                                INPUT_BUFFER[i + spaces] = INPUT_BUFFER[i];
+                        // Tab: completion for commands and filesystem entries
+                        if let Some(inserted) = try_complete() {
+                            if inserted > 0 {
+                                redraw_input_from(INPUT_CURSOR - inserted);
                             }
-                            for s in 0..spaces {
-                                INPUT_BUFFER[INPUT_CURSOR + s] = b' ';
-                            }
-                            INPUT_CURSOR += spaces;
-                            INPUT_LEN += spaces;
-                            redraw_input_from(INPUT_CURSOR - spaces);
                         }
                     }
 
@@ -472,13 +563,15 @@ fn execute_command(cmd: &str) {
         "clear"   => cmd_clear(),
         "ver" | "version" => cmd_version(),
         "uname"   => cmd_uname(args),
-        "ls"      => cmd_ls(args),
-        "pwd"     => cmd_pwd(),
-        "cd"      => cmd_cd(args),
-        "cat"     => cmd_cat(args),
-        "mkdir"   => cmd_mkdir(args),
-        "touch"   => cmd_touch(args),
-        "rm"      => cmd_rm(args),
+        "ls"      => { ospab_os::plum::preprocess(&alloc::format!("ls {}", args)); }
+        "pwd"     => { ospab_os::plum::preprocess("pwd"); }
+        "cd"      => { ospab_os::plum::preprocess(&alloc::format!("cd {}", args)); }
+        "cat"     => { ospab_os::plum::preprocess(&alloc::format!("cat {}", args)); }
+        "mkdir"   => { ospab_os::plum::preprocess(&alloc::format!("mkdir {}", args)); }
+        "touch"   => { ospab_os::plum::preprocess(&alloc::format!("touch {}", args)); }
+        "rm"      => { ospab_os::plum::preprocess(&alloc::format!("rm {}", args)); }
+        "save"    => { ospab_os::plum::preprocess("save"); }
+        "write"   => { ospab_os::plum::preprocess(&alloc::format!("write {}", args)); }
         "whoami"  => cmd_whoami(),
         "hostname"=> cmd_hostname(),
         "date"    => cmd_date(),
@@ -494,6 +587,7 @@ fn execute_command(cmd: &str) {
         "ifconfig" | "ip" => cmd_ifconfig(),
         "ntpdate" => cmd_ntpdate(args),
         "sync"    => cmd_sync(),
+        "dump_disk" => cmd_dump_disk(args),
         "reboot"  => cmd_reboot(),
         "shutdown" | "poweroff" | "halt" => cmd_shutdown(),
         "install" => cmd_install(),
@@ -514,6 +608,10 @@ fn execute_command(cmd: &str) {
         "source"  => { ospab_os::plum::preprocess(&alloc::format!("source {}", args)); }
         "plum"    => { ospab_os::plum::preprocess("plum"); }
         _ => {
+            // AXON coreutils
+            if axon::dispatch(command, args) {
+                return;
+            }
             // Try plum shell preprocessing (alias/variable expansion)
             let full_cmd = if args.is_empty() {
                 alloc::string::String::from(command)
@@ -656,6 +754,7 @@ fn cmd_help(args: &str) {
     lines.push(("cmd", "  mkdir      Create directory (mkdir /tmp/test)"));
     lines.push(("cmd", "  touch      Create empty file (touch /tmp/hello)"));
     lines.push(("cmd", "  rm         Remove file (rm /tmp/hello)"));
+    lines.push(("cmd", "  write      Write text to file (write /path text)"));
     lines.push(("cmd", "  echo       Print text, or echo text > file"));
     lines.push(("normal", ""));
     lines.push(("section", "  SYSTEM INFO"));
@@ -681,6 +780,9 @@ fn cmd_help(args: &str) {
     lines.push(("cmd", "  ntpdate    NTP time sync"));
     lines.push(("normal", ""));
     lines.push(("section", "  SYSTEM CONTROL"));
+    lines.push(("cmd", "  save       Save filesystem to disk (plum)"));
+    lines.push(("cmd", "  sync       Flush VFS to disk"));
+    lines.push(("cmd", "  dump_disk  Hex dump of sector 2048"));
     lines.push(("cmd", "  install    Launch system installer"));
     lines.push(("cmd", "  reboot     Reboot system"));
     lines.push(("cmd", "  shutdown   Shutdown (also poweroff, halt)"));
@@ -868,179 +970,8 @@ fn cmd_uname(args: &str) {
     }
 }
 
-fn cmd_ls(args: &str) {
-    let raw_path = if args.is_empty() { cwd_str() } else { args };
-
-    // Build absolute path
-    let abs_path = resolve_path(raw_path);
-
-    // Refresh /proc files if listing /proc
-    if abs_path.starts_with("/proc") {
-        ospab_os::fs::ramfs::refresh_proc_files();
-    }
-
-    let entries = match ospab_os::fs::readdir(&abs_path) {
-        Some(e) => e,
-        None => {
-            if !ospab_os::fs::exists(&abs_path) {
-                err_print("ls: cannot access '");
-                err_print(raw_path);
-                err_print("': No such file or directory\n");
-            } else {
-                dim_print("(empty directory)\n");
-            }
-            return;
-        }
-    };
-    if entries.is_empty() {
-        dim_print("(empty directory)\n");
-        return;
-    }
-    for e in &entries {
-        match e.node_type {
-            ospab_os::fs::NodeType::Directory => {
-                framebuffer::draw_string("d ", FG_DIM, BG);
-                framebuffer::draw_string(&e.name, FG_DIR, BG);
-                framebuffer::draw_string("/\n", FG_DIR, BG);
-            }
-            ospab_os::fs::NodeType::File | ospab_os::fs::NodeType::CharDevice => {
-                framebuffer::draw_string("- ", FG_DIM, BG);
-                puts(&e.name);
-                let pad = if e.name.len() < 16 { 16 - e.name.len() } else { 1 };
-                for _ in 0..pad { puts(" "); }
-                if e.size > 0 {
-                    dim_dec(e.size as u64);
-                } else {
-                    dim_print("0");
-                }
-                puts("\n");
-            }
-        }
-    }
-}
-
-/// Print a decimal number in dim color
-fn dim_dec(mut val: u64) {
-    if val == 0 {
-        dim_print("0");
-        return;
-    }
-    let mut buf = [0u8; 20];
-    let mut i = 0;
-    while val > 0 {
-        buf[i] = b'0' + (val % 10) as u8;
-        val /= 10;
-        i += 1;
-    }
-    let mut tmp = [0u8; 20];
-    for j in 0..i {
-        tmp[j] = buf[i - 1 - j];
-    }
-    if let Ok(s) = core::str::from_utf8(&tmp[..i]) {
-        dim_print(s);
-    }
-}
-
-fn cmd_pwd() {
-    puts(cwd_str());
-    puts("\n");
-}
-
-fn cmd_cd(args: &str) {
-    if args.is_empty() || args == "~" || args == "/" {
-        unsafe { CWD[0] = b'/'; CWD_LEN = 1; }
-        return;
-    }
-    if args == ".." {
-        // Go to parent
-        unsafe {
-            if CWD_LEN > 1 {
-                // Find last '/' (excluding trailing)
-                let s = core::str::from_utf8_unchecked(&CWD[..CWD_LEN]);
-                if let Some(pos) = s[..s.len()].rfind('/') {
-                    if pos == 0 {
-                        CWD_LEN = 1; // root
-                    } else {
-                        CWD_LEN = pos;
-                    }
-                }
-            }
-        }
-        return;
-    }
-
-    // Build absolute path
-    let abs = resolve_path(args);
-
-    // Check if it exists as a directory in VFS
-    if ospab_os::fs::exists(&abs) {
-        // Verify it's a directory
-        if let Some(stat) = ospab_os::fs::stat(&abs) {
-            match stat.node_type {
-                ospab_os::fs::NodeType::Directory => {
-                    let bytes = abs.as_bytes();
-                    unsafe {
-                        let len = bytes.len().min(63);
-                        CWD[..len].copy_from_slice(&bytes[..len]);
-                        CWD_LEN = len;
-                    }
-                    return;
-                }
-                _ => {
-                    err_print("cd: ");
-                    err_print(args);
-                    err_print(": Not a directory\n");
-                    return;
-                }
-            }
-        }
-    }
-    err_print("cd: ");
-    err_print(args);
-    err_print(": No such directory\n");
-}
-
-fn cmd_cat(args: &str) {
-    if args.is_empty() {
-        err_print("cat: missing operand\n");
-        return;
-    }
-
-    let abs = resolve_path(args);
-
-    // Refresh /proc before reading
-    if abs.starts_with("/proc") {
-        ospab_os::fs::ramfs::refresh_proc_files();
-    }
-
-    match ospab_os::fs::read_file(&abs) {
-        Some(data) => {
-            if data.is_empty() {
-                return; // no content (e.g. /dev/null)
-            }
-            // Print as UTF-8 text
-            if let Ok(text) = core::str::from_utf8(&data) {
-                puts(text);
-                // Ensure trailing newline
-                if !text.ends_with('\n') {
-                    puts("\n");
-                }
-            } else {
-                // Binary data — show size
-                err_print("cat: ");
-                err_print(args);
-                err_print(": binary file (");
-                print_dec(data.len() as u64);
-                err_print(" bytes)\n");
-            }
-        }
-        None => {
-            err_print("cat: ");
-            err_print(args);
-            err_print(": No such file or directory\n");
-        }
-    }
-}
+// VFS commands (ls, cat, touch, mkdir, rm, cd, pwd) are now handled by
+// plum shell in src/userspace/plum/mod.rs — using VFS syscalls only.
 
 fn cmd_whoami() {
     puts("root\n");
@@ -1058,66 +989,6 @@ fn cmd_hostname() {
             }
         }
         None => puts("ospab\n"),
-    }
-}
-
-fn cmd_mkdir(args: &str) {
-    if args.is_empty() {
-        err_print("mkdir: missing operand\n");
-        return;
-    }
-    let abs = resolve_path(args);
-    if ospab_os::fs::exists(&abs) {
-        err_print("mkdir: cannot create directory '");
-        err_print(args);
-        err_print("': File exists\n");
-        return;
-    }
-    if ospab_os::fs::mkdir(&abs) {
-        // success — silent (like real mkdir)
-    } else {
-        err_print("mkdir: cannot create directory '");
-        err_print(args);
-        err_print("'\n");
-    }
-}
-
-fn cmd_touch(args: &str) {
-    if args.is_empty() {
-        err_print("touch: missing file operand\n");
-        return;
-    }
-    let abs = resolve_path(args);
-    if ospab_os::fs::exists(&abs) {
-        return; // touch existing file is a no-op (update timestamp; we have none)
-    }
-    if ospab_os::fs::touch(&abs) {
-        // success — silent
-    } else {
-        err_print("touch: cannot touch '");
-        err_print(args);
-        err_print("'\n");
-    }
-}
-
-fn cmd_rm(args: &str) {
-    if args.is_empty() {
-        err_print("rm: missing operand\n");
-        return;
-    }
-    let abs = resolve_path(args);
-    if !ospab_os::fs::exists(&abs) {
-        err_print("rm: cannot remove '");
-        err_print(args);
-        err_print("': No such file or directory\n");
-        return;
-    }
-    if ospab_os::fs::remove(&abs) {
-        // success
-    } else {
-        err_print("rm: cannot remove '");
-        err_print(args);
-        err_print("': Is a directory or not empty\n");
     }
 }
 
@@ -1186,7 +1057,7 @@ fn cmd_meminfo() {
 
     if ospab_os::mm::heap::is_initialized() {
         let (used, free) = ospab_os::mm::heap::stats();
-        let heap_total = ospab_os::mm::heap::HEAP_SIZE as u64;
+        let heap_total = ospab_os::mm::heap::heap_size() as u64;
         puts("Heap:  ");
         print_size_padded(used as u64, 12);
         print_size_padded(heap_total - used as u64, 12);
@@ -1259,7 +1130,7 @@ fn cmd_lsmem() {
         puts("  Heap used: ");
         print_size(used as u64);
         puts(" / ");
-        print_size(ospab_os::mm::heap::HEAP_SIZE as u64);
+        print_size(ospab_os::mm::heap::heap_size() as u64);
         puts("\n");
     }
 }
@@ -1467,6 +1338,41 @@ fn cmd_sync() {
     }
 }
 
+fn cmd_dump_disk(_args: &str) {
+    use alloc::format;
+    puts("Reading sector 2048 (LBA 0x800)...\n");
+    let mut buf = [0u8; 512];
+    if ospab_os::drivers::read(0, 2048, 1, &mut buf) {
+        // Print first 16 bytes in hex
+        let mut hex = alloc::string::String::with_capacity(80);
+        for i in 0..16 {
+            let b = buf[i];
+            let hi = b >> 4;
+            let lo = b & 0x0F;
+            if i > 0 { hex.push(' '); }
+            hex.push(if hi < 10 { (b'0' + hi) as char } else { (b'a' + hi - 10) as char });
+            hex.push(if lo < 10 { (b'0' + lo) as char } else { (b'a' + lo - 10) as char });
+        }
+        hex.push('\n');
+        puts(&hex);
+        // Also print ASCII interpretation
+        let mut ascii = alloc::string::String::with_capacity(32);
+        ascii.push_str("ASCII: ");
+        for i in 0..16 {
+            let c = buf[i];
+            if c >= 0x20 && c < 0x7f {
+                ascii.push(c as char);
+            } else {
+                ascii.push('.');
+            }
+        }
+        ascii.push('\n');
+        dim_print(&ascii);
+    } else {
+        err_print("Failed to read sector 2048.\n");
+    }
+}
+
 fn cmd_reboot() {
     puts("Syncing and rebooting...\n");
     
@@ -1476,32 +1382,16 @@ fn cmd_reboot() {
     puts("Rebooting...\n");
     klog::record(klog::EventSource::Boot, "Reboot requested");
     ospab_os::arch::x86_64::serial::write_str("[AETERNA] Rebooting...\r\n");
-    unsafe {
-        asm!("cli");
-        let mut timeout = 100000u32;
-        loop {
-            let status: u8;
-            asm!("in al, dx", in("dx") 0x64u16, out("al") status, options(nomem, nostack));
-            if status & 0x02 == 0 || timeout == 0 { break; }
-            timeout -= 1;
-        }
-        asm!("out dx, al", in("dx") 0x64u16, in("al") 0xFEu8, options(nomem, nostack));
-        for _ in 0..1000000u32 { asm!("pause"); }
-        let null_idt: [u8; 6] = [0; 6];
-        asm!("lidt [{}]", in(reg) &null_idt, options(noreturn));
-    }
+    // Use ACPI reboot; falls back internally to 0xCF9/0x64/triple fault
+    acpi::reboot();
 }
 
 fn cmd_shutdown() {
     puts("System shutting down...\n");
     klog::record(klog::EventSource::Boot, "Shutdown requested");
     ospab_os::arch::x86_64::serial::write_str("[AETERNA] Shutting down...\r\n");
-    unsafe {
-        asm!("cli");
-        asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x2000u16, options(nomem, nostack));
-        asm!("out dx, ax", in("dx") 0xB004u16, in("ax") 0x2000u16, options(nomem, nostack));
-        asm!("out dx, ax", in("dx") 0x4004u16, in("ax") 0x3400u16, options(nomem, nostack));
-    }
+    // ACPI shutdown writes PM1a_CNT SLP_TYP/SLP_EN and falls back to emulator ports
+    acpi::shutdown();
     dim_print("\nSystem halted. You may turn off your computer.\n");
     loop { unsafe { asm!("cli; hlt"); } }
 }

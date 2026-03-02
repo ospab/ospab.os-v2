@@ -44,6 +44,7 @@ pub struct Package {
 }
 
 /// Repository entry
+#[allow(dead_code)]
 struct Repo {
     name: String,
     url: String,
@@ -51,10 +52,10 @@ struct Repo {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const DB_PATH: &str = "/var/lib/tomato/db";
+#[allow(dead_code)] const DB_PATH: &str = "/var/lib/tomato/db";
 const LOCAL_PATH: &str = "/var/lib/tomato/local";
-const CACHE_PATH: &str = "/var/cache/tomato/pkg";
-const REPO_CONF: &str = "/etc/tomato/repos.conf";
+#[allow(dead_code)] const CACHE_PATH: &str = "/var/cache/tomato/pkg";
+#[allow(dead_code)] const REPO_CONF: &str = "/etc/tomato/repos.conf";
 
 // ─── Framebuffer output helpers ─────────────────────────────────────────────
 
@@ -529,7 +530,7 @@ fn cmd_install(name: &str) {
     puts(":: resolving dependencies...\n");
     puts(":: looking for conflicting packages...\n\n");
 
-    let new_count = to_install.iter().filter(|p| !is_installed(&p.name)).count();
+    let _new_count = to_install.iter().filter(|p| !is_installed(&p.name)).count();
     let total_size: usize = to_install.iter().map(|p| p.size).sum();
 
     puts("Packages (");

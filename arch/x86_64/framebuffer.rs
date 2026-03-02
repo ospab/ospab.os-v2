@@ -17,6 +17,9 @@ pub struct Framebuffer {
     pub height: u64,
     pub pitch: u64,   // bytes per scanline
     pub bpp: u16,
+    pub red_shift: u8,
+    pub green_shift: u8,
+    pub blue_shift: u8,
 }
 
 static mut FRAMEBUFFER: Option<Framebuffer> = None;
@@ -30,13 +33,19 @@ pub const CHAR_WIDTH: u64 = font::FONT_WIDTH;
 pub const CHAR_HEIGHT: u64 = font::FONT_HEIGHT;
 
 /// Initialize framebuffer with raw parameters from bootloader
-pub unsafe fn init(address: *mut u32, width: u64, height: u64, pitch: u64, bpp: u16) {
+pub unsafe fn init(
+    address: *mut u32, width: u64, height: u64, pitch: u64, bpp: u16,
+    red_shift: u8, green_shift: u8, blue_shift: u8,
+) {
     FRAMEBUFFER = Some(Framebuffer {
         address,
         width,
         height,
         pitch,
         bpp,
+        red_shift,
+        green_shift,
+        blue_shift,
     });
     CURSOR_X = 0;
     CURSOR_Y = 0;

@@ -84,7 +84,7 @@ pub fn init() {
 
         let gdt_ptr = GdtPointer {
             limit: (core::mem::size_of::<[GdtEntry; GDT_ENTRIES]>() - 1) as u16,
-            base: &GDT as *const _ as u64,
+            base: core::ptr::addr_of!(GDT) as u64,
         };
 
         asm!("lgdt [{}]", in(reg) &gdt_ptr, options(readonly, nostack));

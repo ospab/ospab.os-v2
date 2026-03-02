@@ -72,6 +72,9 @@ pub fn init() {
                 fb.height,
                 fb.pitch,
                 fb.bpp,
+                fb.red_mask_shift,
+                fb.green_mask_shift,
+                fb.blue_mask_shift,
             );
         }
         serial::write_str("[AETERNA] Framebuffer initialized\r\n");

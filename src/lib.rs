@@ -5,6 +5,9 @@ Distributed under the Boost Software License, Version 1.1.
 See LICENSE or https://www.boost.org/LICENSE_1_0.txt for details.
 */
 #![no_std]
+// In a bare-metal kernel we intentionally access mutable statics directly;
+// wrapping every site in a Mutex would require OS primitives we don't have yet.
+#![allow(static_mut_refs)]
 
 extern crate alloc;
 
@@ -29,6 +32,11 @@ pub mod net;
 // Storage drivers (ATA PIO, AHCI SATA)
 pub mod drivers;
 
+// ACPI tables, PCI config, and XHCI USB
+pub mod acpi;
+pub mod pci;
+pub mod xhci;
+
 // Virtual filesystem layer + RamFS
 pub mod fs;
 
@@ -39,8 +47,14 @@ pub mod grape;
 #[path = "../userland/tomato/src/lib.rs"]
 pub mod tomato;
 
-#[path = "../userland/plum/src/lib.rs"]
-pub mod plum;
+// Userspace modules (kernel-integrated, VFS-only access)
+pub mod userspace;
+
+// Re-export AXON coreutils
+pub use userspace::axon;
+
+// Re-export plum for backward compatibility
+pub use userspace::plum;
 
 #[path = "../userland/seed/src/lib.rs"]
 pub mod seed;

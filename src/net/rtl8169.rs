@@ -12,6 +12,7 @@
  * Descriptor-based DMA: 4 TX + 4 RX descriptors, 2K buffers each.
  * Uses I/O port (BAR0) for simplicity and broad compatibility.
  */
+#![allow(dead_code)]
 
 // ─── PCI IDs ───────────────────────────────────────────────────────────────
 const RTL_IDS: &[(u16, u16)] = &[
@@ -239,16 +240,14 @@ fn init_device(bus: u8, dev: u8, func: u8) -> bool {
     outw(io + REG_ISR, 0xFFFF); // Clear all pending
 
     // Read MAC
-    let mac = unsafe {
-        [
-            inb(io + REG_IDR0 + 0),
-            inb(io + REG_IDR0 + 1),
-            inb(io + REG_IDR0 + 2),
-            inb(io + REG_IDR0 + 3),
-            inb(io + REG_IDR4 + 0),
-            inb(io + REG_IDR4 + 1),
-        ]
-    };
+    let mac = [
+        inb(io + REG_IDR0 + 0),
+        inb(io + REG_IDR0 + 1),
+        inb(io + REG_IDR0 + 2),
+        inb(io + REG_IDR0 + 3),
+        inb(io + REG_IDR4 + 0),
+        inb(io + REG_IDR4 + 1),
+    ];
     unsafe { MAC = mac; }
 
     crate::arch::x86_64::serial::write_str("[RTL8169] MAC: ");
