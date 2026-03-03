@@ -56,6 +56,34 @@ pub fn is_initialized() -> bool {
     unsafe { FRAMEBUFFER.is_some() }
 }
 
+/// Redirect the kernel framebuffer to a new physical base (e.g. after SVGA II takeover).
+/// Preserves the current cursor position — only replaces the target address and dimensions.
+/// Call this after any hardware that takes over display output and moves the framebuffer.
+pub unsafe fn redirect(address: *mut u32, width: u64, height: u64, pitch: u64) {
+    if let Some(fb) = FRAMEBUFFER.as_mut() {
+        fb.address = address;
+        fb.width   = width;
+        fb.height  = height;
+        fb.pitch   = pitch;
+        // bpp + colour shifts stay as Limine reported them (32bpp BGRA on VMware)
+    } else {
+        // framebuffer not yet initialised — fall back to a best-effort init
+        FRAMEBUFFER = Some(Framebuffer {
+            address,
+            width,
+            height,
+            pitch,
+            bpp: 32,
+            red_shift: 16,
+            green_shift: 8,
+            blue_shift: 0,
+        });
+    }
+    // Clamp cursor to new dimensions
+    if CURSOR_X >= width  { CURSOR_X = 0; }
+    if CURSOR_Y + 16 >= height { CURSOR_Y = if height > 16 { height - 16 } else { 0 }; }
+}
+
 /// Plot single pixel at (x, y) with 32-bit color (0x00RRGGBB or BGR depending on mode)
 #[inline(always)]
 pub fn put_pixel(x: u64, y: u64, color: u32) {

@@ -390,6 +390,20 @@ pub fn init() -> bool {
         CURRENT_WIDTH  = svga_read(SVGA_REG_WIDTH);
         CURRENT_HEIGHT = svga_read(SVGA_REG_HEIGHT);
         CURRENT_BPP    = svga_read(SVGA_REG_BITS_PER_PIXEL);
+
+        // Redirect kernel framebuffer writes to the SVGA linear framebuffer.
+        // VMware has switched display output to FB_PHYS; the old Limine GOP
+        // address is no longer shown on screen.  All subsequent kernel text
+        // must go to the SVGA buffer (accessible via HHDM).
+        let hhdm = crate::arch::x86_64::boot::hhdm_offset().unwrap_or(0xFFFF_8000_0000_0000);
+        let fb_virt = (FB_PHYS + hhdm) as *mut u32;
+        let bpl = svga_read(SVGA_REG_BYTES_PER_LINE) as u64;
+        crate::arch::x86_64::framebuffer::redirect(
+            fb_virt,
+            CURRENT_WIDTH  as u64,
+            CURRENT_HEIGHT as u64,
+            bpl,
+        );
     }
 
     SVGA_READY.store(true, Ordering::Release);
