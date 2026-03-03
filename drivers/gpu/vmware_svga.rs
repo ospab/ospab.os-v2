@@ -284,10 +284,21 @@ pub fn update_rect(x: u32, y: u32, w: u32, h: u32) {
     }
 }
 
+// ─── FIFO state ───────────────────────────────────────────────────────────────
+
+/// Whether the FIFO has been programmed (via `activate()`).
+static FIFO_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 // ─── Initialization ───────────────────────────────────────────────────────────
 
-/// Detect, initialize and enable the VMware SVGA II adapter.
-/// Returns true on success.
+/// Probe VMware SVGA II hardware (non-destructive).
+///
+/// Detects the PCI device, reads BARs, negotiates SVGA protocol version,
+/// and stores all hardware parameters.  Does **not** write SVGA_REG_ENABLE,
+/// FIFO registers, or CONFIG_DONE — the display that Limine set up keeps
+/// working undisturbed.
+///
+/// Returns true if the adapter was found and identified.
 pub fn init() -> bool {
     // 1. Find PCI device
     let dev = match crate::pci::find_by_vendor_device(VMWARE_VID, SVGA2_DID) {
@@ -326,7 +337,7 @@ pub fn init() -> bool {
     serial_hex16(io_base);
     serial::write_str("\r\n");
 
-    // 3. Negotiate SVGA ID
+    // 3. Negotiate SVGA ID (read-modify — does NOT change display state)
     unsafe {
         // Try SVGA_ID_2 first
         svga_write(SVGA_REG_ID, SVGA_ID_2);
@@ -366,36 +377,70 @@ pub fn init() -> bool {
         serial_hex32(FIFO_PHYS as u32);
         serial::write_str("\r\n");
 
-        // 7. Initialize FIFO
-        // Determine FIFO_MIN: skip the FIFO register area
+        // 7. Read current mode that Limine/firmware configured
+        //    (read-only — we do NOT write ENABLE / CONFIG_DONE here)
+        CURRENT_WIDTH  = svga_read(SVGA_REG_WIDTH);
+        CURRENT_HEIGHT = svga_read(SVGA_REG_HEIGHT);
+        CURRENT_BPP    = svga_read(SVGA_REG_BITS_PER_PIXEL);
+    }
+
+    SVGA_READY.store(true, Ordering::Release);
+
+    serial::write_str("[SVGA] Detected — ");
+    unsafe {
+        serial_dec(CURRENT_WIDTH as u64);
+        serial::write_byte(b'x');
+        serial_dec(CURRENT_HEIGHT as u64);
+        serial::write_byte(b'x');
+        serial_dec(CURRENT_BPP as u64);
+    }
+    serial::write_str(" (Limine GOP active, FIFO deferred)\r\n");
+    true
+}
+
+/// Fully activate SVGA II: program FIFO, enable device, redirect framebuffer.
+///
+/// This switches display output from the Limine GOP legacy path to the SVGA
+/// command-driven path.  Call this when you need resolution switching or
+/// hardware-accelerated 2D operations (rect copy/fill, cursor).
+///
+/// After activation, kernel framebuffer writes continue via `update_rect()`
+/// dirty-region flushes — callers should periodically invoke `flush_screen()`
+/// or `update_rect()` for visible updates.
+///
+/// Returns false if SVGA was not detected or activation failed.
+pub fn activate() -> bool {
+    if !is_ready() { return false; }
+    if FIFO_ACTIVE.load(Ordering::Relaxed) { return true; } // already done
+
+    unsafe {
+        // Program FIFO
         let num_regs = if CAPABILITIES & SVGA_CAP_EXTENDED_FIFO != 0 {
             SVGA_FIFO_NUM_REGS
         } else {
             SVGA_FIFO_NUM_REGS_STD
         };
-        let fifo_min = (num_regs * 4) as u32;  // byte offset
-        let fifo_max = FIFO_SIZE.min(256 * 1024); // cap at 256 KiB
+        let fifo_min = (num_regs * 4) as u32;
+        let fifo_max = FIFO_SIZE.min(256 * 1024);
 
         fifo_write(SVGA_FIFO_MIN,      fifo_min);
         fifo_write(SVGA_FIFO_MAX,      fifo_max);
         fifo_write(SVGA_FIFO_NEXT_CMD, fifo_min);
         fifo_write(SVGA_FIFO_STOP,     fifo_min);
 
-        // 8. Enable SVGA
-        svga_write(SVGA_REG_GUEST_ID,   0x5010); // GUEST_OS_OTHER
-        svga_write(SVGA_REG_ENABLE,     1);
+        // Enable SVGA + FIFO command path
+        svga_write(SVGA_REG_GUEST_ID,    0x5010);
+        svga_write(SVGA_REG_ENABLE,      1);
         svga_write(SVGA_REG_CONFIG_DONE, 1);
 
-        // Read back current mode set by Limine
+        // Re-read mode (enable may change geometry)
         CURRENT_WIDTH  = svga_read(SVGA_REG_WIDTH);
         CURRENT_HEIGHT = svga_read(SVGA_REG_HEIGHT);
         CURRENT_BPP    = svga_read(SVGA_REG_BITS_PER_PIXEL);
 
-        // Redirect kernel framebuffer writes to the SVGA linear framebuffer.
-        // VMware has switched display output to FB_PHYS; the old Limine GOP
-        // address is no longer shown on screen.  All subsequent kernel text
-        // must go to the SVGA buffer (accessible via HHDM).
-        let hhdm = crate::arch::x86_64::boot::hhdm_offset().unwrap_or(0xFFFF_8000_0000_0000);
+        // Redirect kernel framebuffer to SVGA buffer via HHDM
+        let hhdm = crate::arch::x86_64::boot::hhdm_offset()
+            .unwrap_or(0xFFFF_8000_0000_0000);
         let fb_virt = (FB_PHYS + hhdm) as *mut u32;
         let bpl = svga_read(SVGA_REG_BYTES_PER_LINE) as u64;
         crate::arch::x86_64::framebuffer::redirect(
@@ -406,18 +451,21 @@ pub fn init() -> bool {
         );
     }
 
-    SVGA_READY.store(true, Ordering::Release);
+    FIFO_ACTIVE.store(true, Ordering::Release);
 
-    serial::write_str("[SVGA] Initialized — ");
-    unsafe {
-        serial_dec(CURRENT_WIDTH as u64);
-        serial::write_byte(b'x');
-        serial_dec(CURRENT_HEIGHT as u64);
-        serial::write_byte(b'x');
-        serial_dec(CURRENT_BPP as u64);
-    }
-    serial::write_str("\r\n");
+    serial::write_str("[SVGA] Activated — FIFO + redirect live\r\n");
+    // Blit full screen so previous content becomes visible immediately
+    flush_screen();
     true
+}
+
+/// Flush the full screen (sends SVGA_CMD_UPDATE for entire display).
+/// Only does anything after activate() has been called.
+pub fn flush_screen() {
+    if !FIFO_ACTIVE.load(Ordering::Relaxed) { return; }
+    unsafe {
+        update_rect(0, 0, CURRENT_WIDTH, CURRENT_HEIGHT);
+    }
 }
 
 // ─── Serial helpers ───────────────────────────────────────────────────────────
