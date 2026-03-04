@@ -23,12 +23,23 @@ Cargo.lock
 
 # --- Logs ---
 *.log
-# --- Large binary artifacts (>100MB, use releases instead) ---
+# --- Large binary artifacts (use GitHub Releases instead) ---
 isos/*.iso
+isos/*.img
 doom1.wad
 *.wad
+
+# --- Internal / generated docs ---
 ospab.os.md
 review.md
-*.log
+tech-manifest.md
 tech-manifest-new.md
 ai-rules.md
+prompt.md
+REPORT.md
+
+# --- Rust compiler crash reports ---
+rustc-ice-*.txt
+
+# --- AAM internal data ---
+aam/
