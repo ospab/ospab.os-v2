@@ -1,90 +1,106 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to ospab.os / AETERNA are documented here.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
 ## [1.0.0] — 2026-03-05 — First Public Release
 
-The first stable release of the AETERNA microkernel. Boots from Live ISO
-(BIOS + UEFI hybrid) via Limine, runs 30+ shell commands, includes
-a working UEFI disk installer, DOOM port, and full userland tools.
+The first stable release of the AETERNA microkernel. Boots from a hybrid BIOS/UEFI Live ISO via
+Limine, provides a complete interactive shell environment with 30+ commands, a working UEFI disk
+installer, a DOOM port, and full userland tooling.
 
 ### Kernel & Architecture
-- **x86_64 bare-metal** — Long Mode, SSE/FPU, GDT, IDT, PIC, PIT (100 Hz)
-- **Memory** — linked_list_allocator, 128 MiB heap, 4-level page tables (PML4)
-- **Limine protocol** — BIOS + UEFI hybrid boot, framebuffer via GOP
-- **Framebuffer** — 8x16 VGA font, 32-bit BGRA rendering
-- **PS/2 keyboard** — IRQ 1, ring buffer, scancode translation
-- **Serial** — COM1 115200 8N1, kernel log output
+
+- **x86-64 bare-metal** — Long Mode, SSE/FPU (CR4 `0x660`), GDT with TSS, IDT with 256 handlers
+- **PIC** — 8259 remapped to IRQ 32–47; PIT IRQ 0 at 100 Hz; PS/2 keyboard IRQ 1
+- **Memory** — bitmap physical allocator, 128 MiB kernel heap (`linked_list_allocator`), 4-level PML4 page tables
+- **Boot protocol** — Limine 10.8.2, framebuffer via GOP, HHDM, memory map
+- **Framebuffer** — 8×16 VGA bitmap font, 32-bit BGRA pixel format
+- **Serial** — COM1 115200 8N1, structured boot log with `[OK]`/`[FAIL]` markers
+- **FPU save/restore** — `fxsave`/`fxrstor` in all interrupt stubs
 
 ### Storage Drivers
-- **ATA PIO** — IDE hard drive read/write
-- **AHCI SATA** — DMA-based SATA via PCI BAR5, NCQ, flush cache
-- **NVMe** — Admin + I/O queue setup, PRP-based transfers, flush
+
+- **ATA PIO** — polling, 28-bit LBA, read/write/identify, error recovery
+- **AHCI SATA** — PCI BAR5, HBA reset, NCQ port init, DMA read/write, flush cache command
+- **NVMe** — PCI BAR0, admin queue setup, I/O queue pair, PRP-based transfers, namespace identify, flush
 
 ### Audio Drivers
-- **AC97** — Intel ICH-compatible audio, DMA BDL ring, 44100 Hz VRA
-- **ES1371** — Ensoniq AudioPCI / Creative CT5880 (VMware support)
-- **Unified API** — `soundtest` command, 440 Hz test tone generation
+
+- **AC97** — Intel ICH-compatible, DMA BDL ring, 44100 Hz VRA, mixer volume control
+- **ES1371** — Ensoniq AudioPCI / Creative CT5880 (VMware Workstation native)
+- **Unified API** — `soundtest` command, 440 Hz sine wave test tone
 
 ### Network Stack
-- **RTL8139** — PCI NIC with DMA ring buffer TX/RX
-- **e1000** — Intel PRO/1000 Gigabit Ethernet
-- **Protocols** — Ethernet, ARP, IPv4, ICMP, UDP, SNTP
-- **Commands** — `ping` with TSC-based latency, `ifconfig`, `ntpdate`
+
+- **RTL8139** — PCI NIC, DMA TX/RX ring buffers, interrupt-driven receive
+- **Intel e1000** — PRO/1000 Gigabit Ethernet, descriptor rings, EEPROM MAC read
+- **Protocols** — Ethernet, ARP (TTL cache), IPv4 (header checksum), ICMP, UDP, SNTP
+- **`ping -c N <ip>`** — TSC-based round-trip time in microseconds
+- **`ntpdate`** — one-shot SNTP sync over UDP/123
 
 ### Virtual Filesystem
-- **VFS** — POSIX-compatible, mount table, path resolution
-- **RamFS** — In-memory BTreeMap with spin-lock
-- **Disk persistence** — Deferred sync to LBA 2048 (10s timer)
+
+- **VFS** — POSIX-compatible trait layer, mount table, path resolution
+- **RamFS** — in-memory `BTreeMap<String, RamNode>`, `spin::Mutex` protected
+- **Deferred sync** — dirty flag + 182-tick PIT timer → serialise to LBA 2048 on boot disk
+- **Boot recovery** — deserialise RamFS from LBA 2048 if magic header present
 - **Standard dirs** — `/etc`, `/proc`, `/dev`, `/home`, `/tmp`, `/sys`, `/boot`, `/var`
+- **27+ nodes** populated at boot: `/etc/hosts`, `/etc/motd`, plumrc, seed config, …
+- **C FFI** — `rust_vfs_open/read/write/close/seek/rename/access/opendir` for DOOM
 
 ### UEFI Disk Installer
-- **GPT** — Protective MBR + primary/backup GPT headers + CRC32 verification
-- **FAT32 ESP** — Dynamic SPC for EDK2 compatibility (>= 65525 clusters)
-- **LFN support** — Long File Name entries for `limine.conf`
+
+- **GPT** — protective MBR, primary + backup GPT headers, CRC32 per spec
+- **FAT32 ESP** — dynamic sectors-per-cluster formula (≥ 65525 clusters, EDK2 compatible)
+- **LFN support** — `lfn_checksum()`, `lfn_entry()`, UCS-2LE encoding; short name `LIMINE~1CON`
 - **Files installed** — `/EFI/BOOT/BOOTX64.EFI`, `/boot/KERNEL`, `/limine.conf`
-- **NVMe + AHCI + ATA** — Works on VMware, QEMU, bare metal
-- **Verification** — Read-back checks for MBR, GPT, VBR, FAT chains, EFI binary
-- **Serial logging** — Full installer trace on COM1 for remote debugging
+- **Multi-controller** — auto-detects NVMe → AHCI → ATA in priority order
+- **Verification** — read-back of MBR, GPT, VBR, FAT[0..7], EFI MZ magic before declaring success
+- **Disk flush** — three explicit `disk_flush()` calls: after GPT, after ESP files, before verify
+- **Serial trace** — every installer step logged to COM1 with hex dump helpers
 
 ### Userland Tools
-- **plum** — POSIX shell with bash scripting, variables, conditionals, loops,
-  functions, `source`, aliases, pipes
-- **grape** — Full-screen nano-style text editor with VFS integration
-- **tomato** — pacman-inspired package manager (`-S`, `-R`, `-Q`, `-Ss`, `-Syu`)
-- **seed** — Init system (PID 1), 9 core services, `start`/`stop`/`restart`
-- **tutor** — Interactive tutorial (`intro`, `fs`, `net`, `mem`, `kernel`, `commands`)
 
-### DOOM
-- **doomgeneric** port running bare-metal on UEFI framebuffer (640x400)
-- Freestanding C runtime bridged to Rust kernel allocator via FFI
-- PS/2 keyboard input, F1-F10 menu, save/load via VFS
+- **plum** — POSIX shell: variables (`$VAR`, `${VAR}`, `$?`), `export`, `alias`, `source`,
+  `if/then/else/fi`, `for/while/do/done`, functions, `$(( ))`, `$( )`, `/etc/plum/plumrc`
+- **grape** — full-screen nano-style editor: title/status/help bars, `Ctrl+O/X/K/U/W/G/T`,
+  arrow keys, PgUp/PgDn, search with wrap-around, block cursor, auto-mkdir on save
+- **tomato** — package manager: `-S/-R/-Q/-Qi/-Ss/-Sy/-Syu`; 10-package built-in repo;
+  installation tracking in `/var/lib/tomato/`
+- **seed** — init system: 9 services (`kernel`, `vfs`, `scheduler`, `console`, `serial`,
+  `keyboard`, `network`, `storage`, `plum`); policies `always/once/manual`; `/etc/seed/init.conf`
+- **tutor** — interactive tutorial: `intro`, `fs`, `net`, `mem`, `kernel`, `commands`
 
 ### Terminal
-- 30+ built-in commands (`ls`, `cat`, `mkdir`, `ping`, `free`, `lspci`, `install`, ...)
-- Command history (Up/Down), tab completion, Ctrl+C cancel, Ctrl+L clear
-- Dual output: framebuffer + serial (COM1)
+
+- 30+ built-in commands: `ls`, `cat`, `cd`, `pwd`, `mkdir`, `touch`, `rm`, `echo` (`>` / `>>`),
+  `ping`, `ifconfig`, `ntpdate`, `free`, `lsmem`, `lspci`, `lsblk`, `fdisk`, `dmesg`,
+  `version`, `uname`, `about`, `whoami`, `hostname`, `date`, `uptime`,
+  `install`, `reboot`, `shutdown`, `poweroff`, `halt`, `sync`,
+  `export`, `alias`, `unalias`, `env`, `set`, `unset`, `type`, `source`
+- Command history (16-entry ring, Up/Down), tab completion, Ctrl+C interrupt, Ctrl+L clear
+- All output mirrored to COM1 serial
+
+### DOOM
+
+- doomgeneric port — 640×400 rendering on UEFI framebuffer, 32-bit BGRA
+- Freestanding C runtime (`malloc`, `free`, `printf`, `sprintf`, `memcpy`, `memmove`,
+  `memset`, `qsort`, `sqrt`, `atan2`, …) bridged to kernel heap via `#[no_mangle]` FFI
+- PS/2 keyboard with scancode-to-DOOM translation; F1–F10 menu navigation
+- Save / load at `/doom/doomsav{0-5}.dsg` via VFS; persisted by deferred disk sync
+
+### Build System
+
+- `build.sh` — DOOM C compile (`gcc -nostdlib`) → kernel (`cargo build --release`) →
+  debug strip (`llvm-objcopy --strip-debug`, output ≈ 6 MB) → hybrid ISO (`xorriso`)
+- `bash build.sh kernel` — kernel-only build, skips ISO generation
+- Zero-warning policy enforced on every commit
 
 ---
 
-## Building
+## [0.x] — Pre-release Development
 
-```bash
-bash build.sh          # Full ISO: cargo + xorriso hybrid
-bash build.sh kernel   # Kernel only
-```
-
-## Running
-
-```bash
-# QEMU (BIOS)
-qemu-system-x86_64 -cdrom isos/ospab-os-v2-101.iso -m 256M -serial stdio
-
-# QEMU (UEFI)
-qemu-system-x86_64 -cdrom isos/ospab-os-v2-101.iso -m 256M -serial stdio \
-  -bios /usr/share/OVMF/OVMF_CODE.fd
-
-# VMware Workstation — attach ISO as CD-ROM, UEFI firmware
-```
+Internal development series. Not publicly tagged.

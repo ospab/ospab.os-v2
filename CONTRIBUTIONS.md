@@ -1,175 +1,202 @@
-# Contributing to ospab.os
+﻿# Contributing to AETERNA / ospab.os
 
-Thank you for your interest in contributing to **ospab.os v2.1.0**! This document describes the guidelines and workflow for contributing to the project.
+Thank you for your interest in contributing. This document covers the build environment,
+code conventions, and contribution workflow.
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-- **Rust nightly** toolchain (`rustup default nightly`)
-- **xorriso** and **mtools** for ISO generation
-- **QEMU** for testing (`qemu-system-x86_64`)
-- **WSL** or Linux environment for building
 
-### Building
+| Tool | Purpose | Install |
+|---|---|---|
+| Rust nightly | Kernel and userland compilation | `rustup default nightly` |
+| `xorriso` | Hybrid ISO generation | `apt install xorriso` |
+| `mtools` | FAT32 image manipulation | `apt install mtools` |
+| LLVM toolchain | `llvm-objcopy` for strip, `clang` for C | `apt install llvm clang` |
+| QEMU | Testing | `apt install qemu-system-x86` |
+
+The kernel targets the custom `x86_64-ospab` Rust target defined in `x86_64-ospab.json`.
+Run `rustup target add` is not needed — cargo picks up the JSON target automatically with the
+`-Z build-std` flag in `.cargo/config.toml`.
+
+### Clone and Build
+
 ```bash
-git clone https://github.com/user/ospab.os-v2.git
-cd ospab.os-v2
+git clone https://github.com/ospab/aeterna.git
+cd aeterna
 bash build.sh
 ```
 
-### Running
+### Run
+
 ```bash
+# Minimal QEMU boot
+qemu-system-x86_64 -cdrom isos/ospab-os-v2-103.iso -m 256M -serial stdio
+
+# With RTL8139 networking
 qemu-system-x86_64 \
-  -cdrom isos/ospab-os-v2-19.iso \
-  -m 256M \
-  -serial stdio \
+  -cdrom isos/ospab-os-v2-103.iso \
+  -m 256M -serial stdio \
   -device rtl8139,netdev=net0 \
   -netdev user,id=net0
+
+# With IDE storage
+qemu-system-x86_64 \
+  -cdrom isos/ospab-os-v2-103.iso \
+  -m 256M -serial stdio \
+  -drive file=disk.img,format=raw,if=ide
 ```
 
 ---
 
-## Project Architecture
+## Codebase Layout
 
-The codebase is organized into the following key areas:
+| Path | Description |
+|---|---|
+| `src/main.rs` | Boot entry point — 5-phase init sequence |
+| `src/lib.rs` | Crate root — all module declarations |
+| `src/terminal.rs` | Interactive terminal, command dispatch |
+| `src/installer.rs` | UEFI disk installer (GPT + FAT32 + LFN) |
+| `src/doom.rs` | DOOM engine Rust FFI layer |
+| `src/fs/` | VFS + RamFS + deferred disk persistence |
+| `src/net/` | RTL8139, e1000, Ethernet, ARP, IPv4, ICMP, UDP, SNTP |
+| `src/drivers/` | ATA PIO, AHCI SATA, NVMe, AC97, ES1371 |
+| `arch/x86_64/` | GDT, IDT, PIC, keyboard, framebuffer, serial, panic |
+| `core/` | Scheduler, IPC, syscall dispatch, capability model |
+| `mm/` | Physical allocator, heap, VMM |
+| `drivers/` | PCI enumeration, storage/video/VirtIO trait stubs |
+| `userland/grape/` | Text editor |
+| `userland/tomato/` | Package manager |
+| `userland/plum/` | Shell |
+| `userland/seed/` | Init system |
+| `doom_engine/` | doomgeneric C source + freestanding libc shim |
 
-| Area | Path | Description |
-|------|------|-------------|
-| Kernel core | `src/main.rs`, `src/lib.rs` | Boot sequence, module declarations |
-| HAL | `arch/x86_64/` | GDT, IDT, PIC, keyboard, framebuffer |
-| Memory | `mm/` | Physical allocator, heap, VMM |
-| Filesystem | `src/fs/` | VFS + RamFS implementation |
-| Networking | `src/net/` | RTL8139, Ethernet, ARP, IPv4, ICMP, UDP |
-| Terminal | `src/terminal.rs` | Command dispatch, 28+ commands |
-| Userland | `userland/` | grape, tomato, plum, seed |
-| Drivers | `src/drivers/`, `drivers/` | ATA, AHCI, PCI |
+---
+
+## Code Conventions
+
+### Rust
+
+- `#![no_std]` everywhere — no standard library. Use `extern crate alloc` for `Vec`, `String`, `BTreeMap`.
+- All public functions and types require doc comments (`///`).
+- Unsafe blocks require a `// SAFETY:` comment explaining the invariant being upheld.
+- Use `crate::` for internal paths, not `ospab_os::` (except from outside the crate).
+- Hardware access functions should be marked `unsafe` and called from a single initialisation site.
+
+### Naming
+
+| Item | Style | Example |
+|---|---|---|
+| Modules, functions, variables | `snake_case` | `init_driver`, `send_packet` |
+| Types, traits, enums | `PascalCase` | `PacketBuffer`, `ServiceState` |
+| Constants | `SCREAMING_SNAKE_CASE` | `MAX_PACKET_SIZE` |
+| Files | `snake_case.rs` | `rtl8139.rs`, `ramfs.rs` |
+
+### File Organisation
+
+- Each subsystem has its own directory with a `mod.rs` entry point.
+- Trait definitions go in a separate `trait.rs` within the same directory.
+- Userland tools live in `userland/<tool>/src/lib.rs`.
+- Architecture-specific code belongs in `arch/x86_64/`.
+
+### Logging
+
+- All subsystem log messages use a prefix: `[NET]`, `[FS]`, `[ATA]`, `[DOOM]`, etc.
+- Messages are terminated with `\r\n` for serial compatibility.
+- Boot-phase messages use `klog::boot()` / `klog::err()` for the `dmesg` ring buffer.
+- Debug-only traces use `serial::write_str()` directly and should be removed before merging.
 
 ---
 
 ## Contribution Areas
 
 ### High Priority
-- **Process isolation** — ELF loader, Ring 3 execution, IPC
-- **RTL8139 RX fix** — receive path returns CBR=0, needs DMA alignment investigation
-- **TCP/IP stack** — currently only UDP is implemented
-- **ext2/FAT filesystem** — persistent storage beyond RamFS
+
+- **Process isolation** — ELF loader, Ring 3 execution, syscall ABI, `fork`/`exec`/`wait`
+- **TCP/IP** — SYN/ACK state machine, connection table, retransmit timer
+- **Capability enforcement** — capability table per process, syscall dispatcher integration
 
 ### Medium Priority
-- **Additional NIC drivers** — e1000, VirtIO-net
-- **USB stack** — UHCI/EHCI/xHCI
-- **Sound driver** — AC97 or Intel HDA
-- **Graphics** — framebuffer double buffering, window manager prototype
 
-### Good First Issues
-- Add new terminal commands
-- Improve `tutor` topics with more content
-- Add new packages to `tomato` repository
-- Improve `plum` shell scripting (loops, conditionals)
-- Write unit tests for VFS operations
+- **Preemptive scheduler** — TCB, IRQ 0 context switch, priority classes, timer wheel
+- **USB stack** — xHCI, HID keyboard, Mass Storage / BOT
+- **ext2/FAT32 mount** — read existing filesystems from disk into the VFS
 
----
+### Good First Contributions
 
-## Code Style
-
-### Rust Guidelines
-- Use `#![no_std]` — no standard library
-- All allocations go through `alloc` crate (`Vec`, `String`, `BTreeMap`)
-- Use `crate::` for internal references (not `ospab_os::`)
-- Unsafe code is acceptable for hardware access, but must be documented
-- All public functions need doc comments
-
-### Naming Conventions
-- **Modules**: `snake_case` (e.g., `src/net/rtl8139.rs`)
-- **Types**: `PascalCase` (e.g., `PacketBuffer`, `ServiceStatus`)
-- **Functions**: `snake_case` (e.g., `init_driver`, `send_packet`)
-- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `MAX_PACKET_SIZE`)
-
-### File Organization
-- Each subsystem has its own directory with `mod.rs`
-- Userland tools live in `userland/<tool>/src/lib.rs`
-- Userland modules are included via `#[path]` in `src/lib.rs`
-- Trait definitions go in separate `trait.rs` files
+- Add a new terminal command (see `src/terminal.rs` — search for the `match cmd_name` block)
+- Improve `tutor` topics with more technical depth
+- Add packages to the `tomato` built-in repository
+- Write VFS unit tests (no hardware required — RamFS is pure Rust)
+- Fix linting: `cargo clippy` and address any new warnings
 
 ---
 
 ## Workflow
 
-### 1. Fork and branch
+### 1. Fork and create a branch
+
 ```bash
-git checkout -b feature/my-feature
+git checkout -b feat/my-feature
 ```
 
-### 2. Make changes
-- Write code following the style guide
-- Test with QEMU
-- Ensure `bash build.sh` succeeds without errors
+### 2. Develop
 
-### 3. Commit
-Use clear, descriptive commit messages:
+- Test with QEMU after every meaningful change.
+- Verify `bash build.sh` completes with zero warnings and zero errors.
+- Check `dmesg` in the running OS for unexpected log output.
+
+### 3. Commit messages
+
+Use the [Conventional Commits](https://www.conventionalcommits.org/) format:
+
 ```
-feat(net): add TCP SYN/ACK handshake
-fix(vfs): handle nested directory creation
-refactor(terminal): extract command dispatch to separate module
-docs: update README with new commands
+feat(net): implement TCP SYN/ACK state machine
+fix(vfs): handle concurrent readdir during deferred sync
+refactor(terminal): extract command dispatch to dedicated module
+docs: update ROADMAP with Phase 9 progress
+chore(build): add strip step with llvm-objcopy
 ```
 
-### 4. Submit
-Open a pull request with:
-- Description of changes
-- Testing steps
-- Screenshots/logs if applicable
+Scope examples: `kernel`, `net`, `vfs`, `fs`, `mm`, `arch`, `installer`, `doom`, `terminal`,
+`plum`, `grape`, `tomato`, `seed`, `drivers`, `build`, `docs`.
+
+### 4. Open a pull request
+
+Include:
+- A clear description of what the change does and why.
+- Steps to reproduce / test the behaviour.
+- Serial log output (`-serial stdio`) showing the relevant boot phases succeeding.
+- Screenshots if the framebuffer output changes.
 
 ---
 
 ## Testing
 
-Since ospab.os is a bare-metal OS, testing is done through QEMU:
+Since AETERNA is a bare-metal kernel, all testing is done through QEMU:
 
 ```bash
 # Build and run
 bash build.sh
-qemu-system-x86_64 -cdrom isos/ospab-os-v2-19.iso -m 256M -serial stdio
-
-# With networking
-qemu-system-x86_64 \
-  -cdrom isos/ospab-os-v2-19.iso \
-  -m 256M \
-  -serial stdio \
-  -device rtl8139,netdev=net0 \
-  -netdev user,id=net0
-
-# With storage
-qemu-system-x86_64 \
-  -cdrom isos/ospab-os-v2-19.iso \
-  -m 256M \
-  -serial stdio \
-  -drive file=disk.img,format=raw,if=ide
+qemu-system-x86_64 -cdrom isos/ospab-os-v2-103.iso -m 256M -serial stdio
 ```
 
-### What to test
-- Boot completes through all 5 phases
-- Terminal responds to commands
-- `grape <file>` — editor opens, can type, save, exit
-- `tomato -S base` — package installs
-- `seed status` — shows services
-- `export VAR=test && echo $VAR` — shell variables work
+**Minimum acceptance checklist before submitting a PR:**
 
----
-
-## Communication
-
-- Issues: Use GitHub Issues for bug reports and feature requests
-- PRs: All contributions go through pull requests
-- Documentation: Update README/docs when adding features
+- [ ] All 5 boot phases complete with `[OK]`
+- [ ] Shell prompt appears (`root@ospab:~# `)
+- [ ] `version` shows correct kernel version
+- [ ] `ls /` returns the standard directory tree
+- [ ] `ping 10.0.2.2` returns RTT in microseconds (if network changed)
+- [ ] `grape /tmp/test.txt` opens, accepts text, saves, exits cleanly (if editor changed)
+- [ ] `seed status` shows all 9 services (if init changed)
+- [ ] `bash build.sh` produces zero warnings
 
 ---
 
 ## License
 
-By contributing to ospab.os, you agree that your contributions will be licensed under the **Boost Software License 1.1** (see [LICENSE](LICENSE)).
-
----
-
-*Thank you for helping build ospab.os!*
+By contributing to AETERNA / ospab.os, you agree that your contributions will be
+licensed under the **Boost Software License 1.1** (see [LICENSE](LICENSE)).
