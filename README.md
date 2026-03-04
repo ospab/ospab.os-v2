@@ -6,7 +6,7 @@
 
 [![lang](https://img.shields.io/badge/language-Rust%20(no__std)-orange?style=flat-square)](https://www.rust-lang.org/)
 [![arch](https://img.shields.io/badge/arch-x86__64-blue?style=flat-square)](#)
-[![kernel](https://img.shields.io/badge/kernel-AETERNA%20v2.1.0-darkblue?style=flat-square)](#)
+[![kernel](https://img.shields.io/badge/kernel-AETERNA%20v1.0.0-darkblue?style=flat-square)](#)
 [![license](https://img.shields.io/badge/license-BSL%201.1-green?style=flat-square)](LICENSE)
 
 <br/>
@@ -91,6 +91,21 @@ A fully functional POSIX-compatible virtual filesystem. RamFS provides an in-mem
 |---|---|
 | ATA PIO | IDE hard drive access |
 | AHCI SATA | Modern SATA controllers via PCI BAR5 |
+| NVMe | NVMe SSD via PCI BAR0 (admin + I/O queues) |
+
+### Audio Drivers
+
+| Driver | Protocol |
+|---|---|
+| AC97 | Intel AC97 Audio (ICH compatible) |
+| ES1371 | Ensoniq AudioPCI / Creative CT5880 |
+
+### Network Drivers
+
+| Driver | Protocol |
+|---|---|
+| RTL8139 | Realtek RTL8139 PCI NIC |
+| e1000 | Intel PRO/1000 (Gigabit Ethernet) |
 
 ---
 
@@ -193,16 +208,17 @@ Run with: `doom`
 ospab.os-v2/
 ├── arch/x86_64/        HAL: GDT, IDT, PIC, SSE, keyboard, framebuffer, serial
 ├── core/               Scheduler, IPC, syscall dispatch
-├── drivers/            PCI, ATA, AHCI, VirtIO
+├── drivers/            PCI, ATA, AHCI, NVMe, VirtIO, AC97, ES1371
 ├── mm/                 Physical allocator, heap, VMM (4-level page tables)
 ├── src/
 │   ├── main.rs         Boot entry — 5-phase init sequence
 │   ├── lib.rs          Crate root
 │   ├── terminal.rs     Interactive terminal
+│   ├── installer.rs    UEFI disk installer (GPT + FAT32 + Limine)
 │   ├── doom.rs         DOOM engine Rust FFI layer
 │   ├── fs/             VFS + RamFS + disk persistence
-│   ├── net/            RTL8139, Ethernet, ARP, IPv4, ICMP, UDP, SNTP
-│   └── drivers/        ATA PIO, AHCI SATA
+│   ├── net/            RTL8139, e1000, Ethernet, ARP, IPv4, ICMP, UDP, SNTP
+│   └── drivers/        ATA PIO, AHCI SATA, NVMe, AC97, ES1371
 ├── doom_engine/        doomgeneric C source (95 files) + freestanding libc
 ├── userland/
 │   ├── grape/          nano-like text editor
@@ -231,7 +247,7 @@ The script compiles the DOOM C engine, builds the Rust kernel, assembles the ISO
 
 ```bash
 qemu-system-x86_64 \
-  -cdrom isos/ospab-os-v2-24.iso \
+  -cdrom isos/ospab-os-v2-101.iso \
   -m 256M \
   -serial stdio \
   -device rtl8139,netdev=net0 \
@@ -242,14 +258,15 @@ qemu-system-x86_64 \
 
 ## Roadmap
 
-**Foundation** — GDT, IDT, PIC, SSE, heap, framebuffer, serial, keyboard `[done]`  
-**Drivers & Networking** — PCI, RTL8139, ARP, IPv4, ICMP, UDP, SNTP, ATA, AHCI `[done]`  
-**VMM + VFS + Syscall** — 4-level page tables, RamFS, sys_open/read/write/close `[done]`  
-**Userland Tools** — grape, tomato, plum, seed, tutor, bash scripting `[done]`  
-**DOOM Port** — doomgeneric bare-metal, freestanding C runtime, Rust FFI `[done]`  
-**Disk Persistence** — RamFS serialization to LBA 2048, boot recovery `[done]`  
-**Process Isolation** — ELF loader, Ring 3, syscall ABI, real IPC `[next]`  
-**Driver Expansion** — VirtIO block/net, NVMe, RTL8169, e1000 `[next]`  
+**Foundation** -- GDT, IDT, PIC, SSE, heap, framebuffer, serial, keyboard `[done]`  
+**Drivers & Networking** -- PCI, RTL8139, e1000, ARP, IPv4, ICMP, UDP, SNTP, ATA, AHCI, NVMe `[done]`  
+**Audio** -- AC97, ES1371/AudioPCI `[done]`  
+**VMM + VFS + Syscall** -- 4-level page tables, RamFS, sys_open/read/write/close `[done]`  
+**Userland Tools** -- grape, tomato, plum, seed, tutor, bash scripting `[done]`  
+**DOOM Port** -- doomgeneric bare-metal, freestanding C runtime, Rust FFI `[done]`  
+**Disk Persistence** -- RamFS serialization to LBA 2048, boot recovery `[done]`  
+**UEFI Installer** -- GPT + FAT32 ESP + Limine, installs to NVMe/AHCI/ATA `[done]`  
+**Process Isolation** -- ELF loader, Ring 3, syscall ABI, real IPC `[next]`  
 
 ---
 
