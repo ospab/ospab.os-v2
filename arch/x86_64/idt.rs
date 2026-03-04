@@ -532,6 +532,10 @@ extern "C" fn irq_dispatch(saved_state: *const u8, irq: u64) {
                 KB_BUFFER_WRITE = KB_BUFFER_WRITE.wrapping_add(1);
             }
         }
+        5 => {
+            // AC97 Audio Controller IRQ (PCI IRQ line 5, default for QEMU AC97)
+            crate::drivers::audio::handle_ac97_irq();
+        }
         9 | 10 | 11 => {
             // Network IRQ — dispatch to the active NIC driver
             crate::net::handle_net_irq();
