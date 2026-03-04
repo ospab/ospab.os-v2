@@ -26,7 +26,7 @@
 
 The project is not a toy kernel. It implements a real memory hierarchy (physical allocator, 128 MiB kernel heap, 4-level page tables), a POSIX-compatible virtual filesystem with disk persistence, a working TCP/IP-adjacent network stack, storage drivers for ATA/AHCI/NVMe, audio drivers (AC97, ES1371), a UEFI disk installer with GPT/FAT32/LFN support, and a capability-based security model in design.
 
-> The project name is **ospab** (lowercase). The kernel is **AETERNA**.
+> The project name is **ospab.os** (lowercase). The kernel is **AETERNA**.
 
 ---
 
@@ -57,17 +57,17 @@ The project is not a toy kernel. It implements a real memory hierarchy (physical
 │               VFS  ·  RamFS  ·  Syscall layer            │
 ├───────────────────────┬──────────────────────────────────┤
 │     Network Stack     │         Storage Drivers          │
-│  RTL8139 · e1000      │   ATA PIO · AHCI SATA · NVMe    │
+│  RTL8139 · e1000      │   ATA PIO · AHCI SATA · NVMe     │
 │  ARP · IPv4 · ICMP    │                                  │
 │  UDP · SNTP           │   Audio: AC97 · ES1371           │
 ├───────────────────────┴──────────────────────────────────┤
 │              AETERNA Microkernel  (Rust, no_std)         │
 │                                                          │
 │  Hardware Abstraction                                    │
-│    GDT · IDT · PIC · SSE/FPU · PIT (100 Hz)             │
+│    GDT · IDT · PIC · SSE/FPU · PIT (100 Hz)              │
 │                                                          │
 │  Memory                                                  │
-│    Physical allocator · 128 MiB heap · 4-level PML4     │
+│    Physical allocator · 128 MiB heap · 4-level PML4      │
 │                                                          │
 │  Execution                                               │
 │    Compute-First scheduler · MSR-based syscall dispatch  │
