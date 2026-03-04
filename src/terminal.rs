@@ -22,7 +22,7 @@ const BUILTINS: &[&str] = &[
     "help", "echo", "clear", "ver", "version", "uname", "ls", "pwd", "cd",
     "cat", "mkdir", "touch", "rm", "save", "write", "whoami", "hostname",
     "date", "about", "meminfo", "free", "uptime", "dmesg", "lsmem",
-    "lspci", "lsblk", "fdisk", "mkfs", "mount", "ping", "ifconfig", "ip", "ntpdate", "netdiag", "sync",
+    "lspci", "lsblk", "fdisk", "mkfs", "mount", "ping", "ifconfig", "ip", "ntpdate", "netdiag", "soundtest", "sync",
     "dump_disk", "reboot", "shutdown", "poweroff", "halt", "install", "history",
     "tutor", "grape", "tomato", "seed", "bash", "doom", "aai", "export", "alias",
     "unalias", "env", "set", "unset", "type", "source", "plum",
@@ -600,6 +600,7 @@ fn execute_command(cmd: &str) {
             ospab_os::net::diag::run_full_diagnostic();
             puts("Done. Check serial output for full report.\n");
         }
+        "soundtest" => cmd_soundtest(),
         "ntpdate" => cmd_ntpdate(args),
         "sync"    => cmd_sync(),
         "dump_disk" => cmd_dump_disk(args),
@@ -725,6 +726,17 @@ fn cmd_help(args: &str) {
                 dim_print("  F1=help, F2=save, F3=load, ESC=quit.\n");
                 return;
             }
+            "soundtest" => {
+                puts("soundtest\n");
+                dim_print("  Audio driver diagnostics + test tone.\n");
+                dim_print("  Reports active driver (AC97 / HDA / none),\n");
+                dim_print("  DMA ring state, IRQ line, and all AC97\n");
+                dim_print("  hardware registers to serial COM1.\n");
+                dim_print("  Then plays a 440 Hz sine tone (0.5 s)\n");
+                dim_print("  through all available audio outputs.\n");
+                dim_print("  Use: soundtest\n");
+                return;
+            }
             "aai" => {
                 puts("aai <subcommand> [args]\n");
                 dim_print("  Aeterna AI utility — powered by ANE (Aeterna Neural Engine).\n\n");
@@ -814,7 +826,11 @@ fn cmd_help(args: &str) {
     lines.push(("section", "  NETWORKING"));
     lines.push(("cmd", "  ifconfig   Network interface status"));
     lines.push(("cmd", "  ping       ICMP ping (ping 10.0.2.2)"));
+    lines.push(("cmd", "  netdiag    Full NIC/stack diagnostics → serial"));
     lines.push(("cmd", "  ntpdate    NTP time sync"));
+    lines.push(("normal", ""));
+    lines.push(("section", "  AUDIO"));
+    lines.push(("cmd", "  soundtest  Audio driver diagnostics + 440 Hz tone"));
     lines.push(("normal", ""));
     lines.push(("section", "  SYSTEM CONTROL"));
     lines.push(("cmd", "  save       Save filesystem to disk (plum)"));
@@ -1419,6 +1435,127 @@ fn cmd_dump_disk(_args: &str) {
     } else {
         err_print("Failed to read sector 2048.\n");
     }
+}
+
+// ─── soundtest — audio subsystem diagnostics + 440 Hz test tone ──────────────
+
+fn cmd_soundtest() {
+    extern crate alloc;
+    use ospab_os::arch::x86_64::serial;
+    use ospab_os::drivers::audio;
+
+    // ── header ──────────────────────────────────────────────────────────────
+    serial::write_str("[SOUND] === Audio Subsystem Diagnostics ===\r\n");
+    puts("=== Audio Subsystem Diagnostics ===\n");
+
+    // ── driver status ───────────────────────────────────────────────────────
+    let driver = audio::active_driver_name();
+    let ready  = audio::is_ready();
+
+    let mut nbuf = [0u8; 8];
+
+    serial::write_str("[SOUND] Active driver : "); serial::write_str(driver); serial::write_str("\r\n");
+    serial::write_str("[SOUND] Ready         : ");
+    serial::write_str(if ready { "yes" } else { "no" }); serial::write_str("\r\n");
+
+    puts("Active driver : "); puts(driver); puts("\n");
+    if ready {
+        framebuffer::draw_string("Status        : ready\n", FG_OK, BG);
+    } else {
+        framebuffer::draw_string("Status        : NOT READY\n", FG_ERR, BG);
+    }
+
+    // ── AC97 IRQ + DMA state ────────────────────────────────────────────────
+    let irq = audio::ac97::irq_line();
+    serial::write_str("[SOUND] AC97 IRQ      : ");
+    serial::write_str(ospab_os::format_u64(&mut nbuf, irq as u64));
+    serial::write_str("\r\n");
+    puts("AC97 IRQ line : ");
+    print_dec(irq as u64);
+    puts("\n");
+
+    if ready && driver == "AC97" {
+        let (civ, fill, in_flight) = audio::ac97::dma_status();
+        serial::write_str("[SOUND] CIV=");
+        serial::write_str(ospab_os::format_u64(&mut nbuf, civ as u64));
+        serial::write_str("  FILL_IDX=");
+        serial::write_str(ospab_os::format_u64(&mut nbuf, fill as u64));
+        serial::write_str("  in_flight=");
+        serial::write_str(ospab_os::format_u64(&mut nbuf, in_flight as u64));
+        serial::write_str("\r\n");
+    }
+
+    // ── full register + memory dump (serial only) ───────────────────────────
+    serial::write_str("[SOUND] --- AC97 register dump ---\r\n");
+    puts("Full register dump → serial COM1.\n");
+    audio::ac97::dump_status();
+    audio::ac97::dump_mem_map();
+
+    // ── test tone ────────────────────────────────────────────────────────────
+    if !ready {
+        puts("No audio driver ready — test tone skipped.\n");
+        serial::write_str("[SOUND] No driver — test tone SKIPPED\r\n");
+        serial::write_str("[SOUND] === End Diagnostics ===\r\n");
+        return;
+    }
+
+    puts("Generating 440 Hz test tone (0.5 s, 44.1 kHz, stereo 16-bit)...\n");
+    serial::write_str("[SOUND] Generating 440 Hz test tone (0.5 s, stereo 16-bit)...\r\n");
+
+    // 16-sample sine table: sin(i*2π/16) * 16384  (50 % amplitude, no fp needed)
+    // sin(  0°) = 0       sin( 22.5°) = 0.3827   * 16384 = 6270
+    // sin( 45°) = 0.7071  * 16384 = 11585
+    // sin( 67.5°) = 0.9239* 16384 = 15137
+    // sin( 90°) = 1.0     * 16384 = 16384
+    const SIN16: [i16; 16] = [
+        0, 6270, 11585, 15137, 16384, 15137, 11585, 6270,
+        0, -6270, -11585, -15137, -16384, -15137, -11585, -6270,
+    ];
+
+    // Phase increment for 440 Hz at 44100 Hz using 16-entry table (Q16.16):
+    //   440 * 16 * 65536 / 44100 = 461_373_440 / 44100 ≈ 10462
+    const PHASE_INC: u32 = (440u64 * 16u64 * 65536u64 / 44100u64) as u32;
+
+    // 0.5 s = 22050 stereo frames × 4 bytes = 88200 bytes — fits in AC97 ring (128 KiB)
+    const CHUNK_FRAMES: usize = 1024;           // frames per submission batch
+    const CHUNK_BYTES:  usize = CHUNK_FRAMES * 4; // bytes per batch (L+R × 2)
+    const TOTAL_FRAMES: usize = 22050;          // 0.5 s at 44100 Hz
+
+    let mut phase:       u32  = 0;
+    let mut total_bytes: usize = 0;
+    let mut remaining:   usize = TOTAL_FRAMES;
+    let mut pcm: alloc::vec::Vec<u8> = alloc::vec![0u8; CHUNK_BYTES];
+
+    while remaining > 0 {
+        let n = if remaining > CHUNK_FRAMES { CHUNK_FRAMES } else { remaining };
+        for i in 0..n {
+            let idx = ((phase >> 16) as usize) & 0xF;
+            let s   = SIN16[idx];
+            let lo  = (s as u16 & 0xFF) as u8;
+            let hi  = ((s as u16) >> 8) as u8;
+            pcm[i * 4    ] = lo;
+            pcm[i * 4 + 1] = hi;
+            pcm[i * 4 + 2] = lo;  // Right = Left (mono-centre)
+            pcm[i * 4 + 3] = hi;
+            phase = phase.wrapping_add(PHASE_INC);
+        }
+        let bytes = n * 4;
+        audio::write_pcm(&pcm[..bytes]);
+        total_bytes += bytes;
+        remaining   -= n;
+    }
+
+    // ── report ───────────────────────────────────────────────────────────────
+    serial::write_str("[SOUND] Bytes submitted : ");
+    serial::write_str(ospab_os::format_u64(&mut nbuf, total_bytes as u64));
+    serial::write_str("\r\n");
+    serial::write_str("[SOUND] === End Diagnostics ===\r\n");
+
+    puts("Bytes submitted : ");
+    print_dec(total_bytes as u64);
+    puts("\n");
+    framebuffer::draw_string("Test tone queued to audio driver.\n", FG_OK, BG);
+    dim_print("Full register dump on serial COM1 (115200 baud).\n");
 }
 
 fn cmd_reboot() {

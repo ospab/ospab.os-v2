@@ -82,3 +82,12 @@ pub fn handle_ac97_irq() {
         ac97::handle_irq();
     }
 }
+
+/// Returns a static string identifying the active audio driver.
+pub fn active_driver_name() -> &'static str {
+    match ACTIVE_DRIVER.load(Ordering::Relaxed) {
+        1 => "AC97",
+        2 => "HDA",
+        _ => "none",
+    }
+}
