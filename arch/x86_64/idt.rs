@@ -552,13 +552,20 @@ extern "C" fn irq_dispatch(saved_state: *const u8, irq: u64) {
             }
         }
         5 => {
-            // AC97 Audio Controller IRQ (PCI IRQ line 5, default for QEMU AC97)
+            // IRQ 5: AC97 (QEMU default) or ES1371 (VMware default)
             crate::drivers::audio::handle_ac97_irq();
+            crate::drivers::audio::handle_es1371_irq();
+        }
+        7 => {
+            // IRQ 7: spurious LPT1 / also used by some PCI audio
+            crate::drivers::audio::handle_es1371_irq();
         }
         9 | 10 | 11 => {
             // Network IRQ — dispatch to the active NIC driver
             crate::net::handle_net_irq();
             unsafe { NET_IRQ_PENDING = true; }
+            // Also dispatch to audio if the ES1371 was assigned one of these IRQs
+            crate::drivers::audio::handle_es1371_irq();
         }
         14 => {
             // Primary ATA (IRQ 14) — MUST read status register to de-assert the IRQ line.

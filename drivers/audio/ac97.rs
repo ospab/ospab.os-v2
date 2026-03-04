@@ -49,9 +49,12 @@ const PCI_VID_INTEL: u16 = 0x8086;
 const PCI_DID_ICH_AC97:  u16 = 0x2415; // 82801AA  (QEMU default)
 const PCI_DID_ICH_AC97B: u16 = 0x2425; // 82801AB
 const PCI_DID_ICH2_AC97: u16 = 0x2445; // 82801BA
-
-const PCI_CLASS_MULTIMEDIA: u8   = 0x04;
-const PCI_SUBCLASS_AUDIO:   u8   = 0x01; // AC'97 audio (not HDA = 0x03)
+// VIA VT82C686A/B AC97 controller
+const PCI_VID_VIA:       u16 = 0x1106;
+const PCI_DID_VIA_AC97:  u16 = 0x3058;
+// NOTE: Ensoniq ES1371 (1274:1371) is handled by the es1371 driver, NOT here.
+// We deliberately omit the generic class/subclass fallback scan to avoid
+// grabbing ES1371 and other AudioPCI chips that have different BARs.
 
 // ─── NAM Registers (16-bit R/W at NAM_BASE + offset) ────────────────────────
 
@@ -449,54 +452,39 @@ unsafe fn init_nabm() -> bool {
 pub fn init() -> bool {
     // ── Step 1: PCI discovery ────────────────────────────────────────────────
     //
-    // Try known device IDs first, then fall back to class/subclass scan.
+    // Match only known Intel ICH AC97 and VIA VT82C686 controllers.
+    // The generic class/subclass scan has been intentionally removed —
+    // it captures ES1371 (1274:1371) and other AudioPCI chips that use
+    // a completely different register interface and need their own driver.
     let (bus, dev, func) = {
-        let known_ids: [(u16, u16); 3] = [
+        let known_ids: [(u16, u16); 4] = [
             (PCI_VID_INTEL, PCI_DID_ICH_AC97),
             (PCI_VID_INTEL, PCI_DID_ICH_AC97B),
             (PCI_VID_INTEL, PCI_DID_ICH2_AC97),
+            (PCI_VID_VIA,   PCI_DID_VIA_AC97),
         ];
 
-        // Pass 1: match known PCI IDs (fast path; avoids reading every slot)
-        let mut found_by_id: Option<(u8, u8, u8)> = None;
-        'id_scan: for b in 0..=255u8 {
+        let mut found: Option<(u8, u8, u8)> = None;
+        'scan: for b in 0..=255u8 {
             for d in 0..32u8 {
                 let vid = crate::pci::vendor_id(b, d, 0);
                 if vid == 0xFFFF { continue; }
                 let did = crate::pci::device_id(b, d, 0);
                 for &(kv, kd) in &known_ids {
                     if vid == kv && did == kd {
-                        found_by_id = Some((b, d, 0));
-                        break 'id_scan;
+                        found = Some((b, d, 0));
+                        break 'scan;
                     }
                 }
             }
         }
 
-        if let Some(pos) = found_by_id {
-            pos
-        } else {
-            // Pass 2: class/subclass scan (any vendor AC97-class device)
-            let mut fb = 0u8; let mut fd = 0u8; let mut ff = 0u8;
-            let mut found = false;
-            'scan: for b in 0..=255u8 {
-                for d in 0..32u8 {
-                    for f in 0..8u8 {
-                        if crate::pci::vendor_id(b, d, f) == 0xFFFF { continue; }
-                        let (class, subclass, _) = crate::pci::class_code(b, d, f);
-                        if class == PCI_CLASS_MULTIMEDIA && subclass == PCI_SUBCLASS_AUDIO {
-                            fb = b; fd = d; ff = f;
-                            found = true;
-                            break 'scan;
-                        }
-                    }
-                }
-            }
-            if !found {
-                serial::write_str("[AC97] No AC97 controller found on PCI bus\r\n");
+        match found {
+            Some(p) => p,
+            None => {
+                serial::write_str("[AC97] No Intel/VIA AC97 controller found\r\n");
                 return false;
             }
-            (fb, fd, ff)
         }
     };
 

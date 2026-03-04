@@ -1444,14 +1444,12 @@ fn cmd_soundtest() {
     use ospab_os::arch::x86_64::serial;
     use ospab_os::drivers::audio;
 
-    // ── header ──────────────────────────────────────────────────────────────
+    // ── header ───────────────────────────────────────────────────────────────
     serial::write_str("[SOUND] === Audio Subsystem Diagnostics ===\r\n");
     puts("=== Audio Subsystem Diagnostics ===\n");
 
-    // ── driver status ───────────────────────────────────────────────────────
     let driver = audio::active_driver_name();
     let ready  = audio::is_ready();
-
     let mut nbuf = [0u8; 8];
 
     serial::write_str("[SOUND] Active driver : "); serial::write_str(driver); serial::write_str("\r\n");
@@ -1465,16 +1463,15 @@ fn cmd_soundtest() {
         framebuffer::draw_string("Status        : NOT READY\n", FG_ERR, BG);
     }
 
-    // ── AC97 IRQ + DMA state ────────────────────────────────────────────────
-    let irq = audio::ac97::irq_line();
-    serial::write_str("[SOUND] AC97 IRQ      : ");
+    // ── IRQ line ─────────────────────────────────────────────────────────────
+    let irq = audio::irq_line();
+    serial::write_str("[SOUND] IRQ           : ");
     serial::write_str(ospab_os::format_u64(&mut nbuf, irq as u64));
     serial::write_str("\r\n");
-    puts("AC97 IRQ line : ");
-    print_dec(irq as u64);
-    puts("\n");
+    puts("IRQ line      : "); print_dec(irq as u64); puts("\n");
 
-    if ready && driver == "AC97" {
+    // ── AC97-specific DMA state ───────────────────────────────────────────────
+    if driver == "AC97" && ready {
         let (civ, fill, in_flight) = audio::ac97::dma_status();
         serial::write_str("[SOUND] CIV=");
         serial::write_str(ospab_os::format_u64(&mut nbuf, civ as u64));
@@ -1485,13 +1482,12 @@ fn cmd_soundtest() {
         serial::write_str("\r\n");
     }
 
-    // ── full register + memory dump (serial only) ───────────────────────────
-    serial::write_str("[SOUND] --- AC97 register dump ---\r\n");
+    // ── full register dump (serial only, driver-agnostic) ────────────────────
     puts("Full register dump → serial COM1.\n");
-    audio::ac97::dump_status();
-    audio::ac97::dump_mem_map();
+    audio::dump_status();
+    audio::dump_mem_map();
 
-    // ── test tone ────────────────────────────────────────────────────────────
+    // ── no driver — abort ────────────────────────────────────────────────────
     if !ready {
         puts("No audio driver ready — test tone skipped.\n");
         serial::write_str("[SOUND] No driver — test tone SKIPPED\r\n");
@@ -1499,31 +1495,35 @@ fn cmd_soundtest() {
         return;
     }
 
-    puts("Generating 440 Hz test tone (0.5 s, 44.1 kHz, stereo 16-bit)...\n");
-    serial::write_str("[SOUND] Generating 440 Hz test tone (0.5 s, stereo 16-bit)...\r\n");
+    // ── test tone ─────────────────────────────────────────────────────────────
+    //
+    // Use the driver's native sample rate (44100 Hz for AC97/HDA, 48000 Hz for ES1371).
+    // 16-sample sine table: sin(i·2π/16) × 16384  (50 % amplitude, integer-only)
+    let sample_rate = audio::sample_rate();
 
-    // 16-sample sine table: sin(i*2π/16) * 16384  (50 % amplitude, no fp needed)
-    // sin(  0°) = 0       sin( 22.5°) = 0.3827   * 16384 = 6270
-    // sin( 45°) = 0.7071  * 16384 = 11585
-    // sin( 67.5°) = 0.9239* 16384 = 15137
-    // sin( 90°) = 1.0     * 16384 = 16384
+    puts("Generating 440 Hz test tone (0.5 s, ");
+    print_dec(sample_rate as u64);
+    puts(" Hz, stereo 16-bit)...\n");
+    serial::write_str("[SOUND] Generating 440 Hz test tone @ ");
+    serial::write_str(ospab_os::format_u64(&mut nbuf, sample_rate as u64));
+    serial::write_str(" Hz...\r\n");
+
     const SIN16: [i16; 16] = [
         0, 6270, 11585, 15137, 16384, 15137, 11585, 6270,
         0, -6270, -11585, -15137, -16384, -15137, -11585, -6270,
     ];
 
-    // Phase increment for 440 Hz at 44100 Hz using 16-entry table (Q16.16):
-    //   440 * 16 * 65536 / 44100 = 461_373_440 / 44100 ≈ 10462
-    const PHASE_INC: u32 = (440u64 * 16u64 * 65536u64 / 44100u64) as u32;
+    // Phase increment Q16.16 = 440 × 16 × 65536 / sample_rate
+    let phase_inc: u32 = ((440u64 * 16u64 * 65536u64) / sample_rate as u64) as u32;
 
-    // 0.5 s = 22050 stereo frames × 4 bytes = 88200 bytes — fits in AC97 ring (128 KiB)
-    const CHUNK_FRAMES: usize = 1024;           // frames per submission batch
-    const CHUNK_BYTES:  usize = CHUNK_FRAMES * 4; // bytes per batch (L+R × 2)
-    const TOTAL_FRAMES: usize = 22050;          // 0.5 s at 44100 Hz
+    // 0.5 seconds of frames
+    let total_frames: usize = (sample_rate / 2) as usize;
+    const CHUNK_FRAMES: usize = 1024;
+    const CHUNK_BYTES:  usize = CHUNK_FRAMES * 4;
 
     let mut phase:       u32  = 0;
     let mut total_bytes: usize = 0;
-    let mut remaining:   usize = TOTAL_FRAMES;
+    let mut remaining:   usize = total_frames;
     let mut pcm: alloc::vec::Vec<u8> = alloc::vec![0u8; CHUNK_BYTES];
 
     while remaining > 0 {
@@ -1535,9 +1535,9 @@ fn cmd_soundtest() {
             let hi  = ((s as u16) >> 8) as u8;
             pcm[i * 4    ] = lo;
             pcm[i * 4 + 1] = hi;
-            pcm[i * 4 + 2] = lo;  // Right = Left (mono-centre)
+            pcm[i * 4 + 2] = lo;
             pcm[i * 4 + 3] = hi;
-            phase = phase.wrapping_add(PHASE_INC);
+            phase = phase.wrapping_add(phase_inc);
         }
         let bytes = n * 4;
         audio::write_pcm(&pcm[..bytes]);
@@ -1545,15 +1545,12 @@ fn cmd_soundtest() {
         remaining   -= n;
     }
 
-    // ── report ───────────────────────────────────────────────────────────────
     serial::write_str("[SOUND] Bytes submitted : ");
     serial::write_str(ospab_os::format_u64(&mut nbuf, total_bytes as u64));
     serial::write_str("\r\n");
     serial::write_str("[SOUND] === End Diagnostics ===\r\n");
 
-    puts("Bytes submitted : ");
-    print_dec(total_bytes as u64);
-    puts("\n");
+    puts("Bytes submitted : "); print_dec(total_bytes as u64); puts("\n");
     framebuffer::draw_string("Test tone queued to audio driver.\n", FG_OK, BG);
     dim_print("Full register dump on serial COM1 (115200 baud).\n");
 }
