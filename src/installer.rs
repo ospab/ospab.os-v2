@@ -310,12 +310,12 @@ fn w64(buf: &mut [u8], o: usize, v: u64) { buf[o..o+8].copy_from_slice(&v.to_le_
 // ── UI ────────────────────────────────────────────────────────────────────────
 fn draw_header() {
     framebuffer::clear(BG); framebuffer::set_cursor_pos(0, 0);
-    hl("╔══════════════════════════════════════════════╗\n");
-    hl("║"); puts("   aeterna-install  --  AETERNA Microkernel   "); hl("║\n");
-    hl("║"); dim("           x86_64   |   UEFI + BIOS           "); hl("║\n");
-    hl("╚══════════════════════════════════════════════╝\n\n");
+    hl("+----------------------------------------------+\n");
+    hl("|"); puts("   aeterna-install  --  AETERNA Microkernel   "); hl("|\n");
+    hl("|"); dim("           x86_64   |   UEFI + BIOS           "); hl("|\n");
+    hl("+----------------------------------------------+\n\n");
 }
-fn draw_sep() { dim("  ──────────────────────────────────────────────\n"); }
+fn draw_sep() { dim("  ------------------------------------------------\n"); }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Main entry point
@@ -498,12 +498,12 @@ fn do_install(disk: VDisk, esp_size_mb: u64, hostname: &[u8], _password: &[u8], 
     puts("  Installing AETERNA to  /dev/"); hl(disk.name()); puts("\n\n");
     puts("  Partition plan:\n");
     dim("  Dev         Start       End         Size        Type\n");
-    dim("  ───────────────────────────────────────────────────\n");
+    dim("  ---------------------------------------------------\n");
     puts("  /dev/"); puts(disk.name()); puts(disk.part_sep()); hl("1");
-    puts("   "); put_u64(esp_start); puts("  –  "); put_u64(esp_end);
+    puts("   "); put_u64(esp_start); puts("  -  "); put_u64(esp_end);
     puts("   "); put_size(esp_size_mb); puts("  EFI System (FAT32)\n");
     puts("  /dev/"); puts(disk.name()); puts(disk.part_sep()); hl("2");
-    puts("   "); put_u64(root_start); puts("  –  "); put_u64(root_end);
+    puts("   "); put_u64(root_start); puts("  -  "); put_u64(root_end);
     puts("   "); put_size(root_mb); puts("  AETERNA root\n\n");
 
     puts("  Files to write in ESP:\n");
@@ -864,17 +864,17 @@ fn do_install(disk: VDisk, esp_size_mb: u64, hostname: &[u8], _password: &[u8], 
     // ══════════════════════════════════════════════════════════════════════
     // Summary
     puts("\n"); draw_sep();
-    if all_ok { ok("  ✔  Installation complete!\n"); }
-    else { warn("  ⚠  Complete with warnings — check FAIL entries above.\n"); }
+    if all_ok { ok("  [OK] Installation complete!\n"); }
+    else { warn("  [!!] Complete with warnings - check FAIL entries above.\n"); }
     draw_sep(); puts("\n");
 
-    puts("  /dev/"); hl(disk.name()); puts(" — partition layout:\n\n");
+    puts("  /dev/"); hl(disk.name()); puts(" - partition layout:\n\n");
     dim("    Sector 0          Protective MBR\n");
     dim("    Sector 1          GPT header\n");
     dim("    Sectors 2-33      GPT entries\n");
-    puts("    "); put_u64(esp_start); puts(" – "); put_u64(esp_end);
+    puts("    "); put_u64(esp_start); puts(" - "); put_u64(esp_end);
     puts("   ESP FAT32 ("); put_size(esp_size_mb); puts(")\n");
-    puts("    "); put_u64(root_start); puts(" – "); put_u64(root_end);
+    puts("    "); put_u64(root_start); puts(" - "); put_u64(root_end);
     puts("   AETERNA root ("); put_size(root_mb); puts(")\n\n");
 
     puts("  ESP:\n");
