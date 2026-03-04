@@ -569,7 +569,25 @@ pub fn init() -> bool {
     AUDIO_READY.store(true, Ordering::Release);
     FILL_IDX.store(0, Ordering::Relaxed);
     serial::write_str("[AC97] Audio driver ready\r\n");
+
+    // Dump diagnostic info to serial at init time
+    dump_mem_map();
+    dump_status();
+
     true
+}
+
+// ─── Public: enable Global Interrupt Enable ──────────────────────────────────
+
+/// Must be called AFTER init() completes to enable AC97 interrupt delivery.
+/// Separated so the caller can register the IRQ handler before enabling.
+pub fn enable_interrupts() {
+    if !AUDIO_READY.load(Ordering::Acquire) { return; }
+    unsafe {
+        let glbcnt = nabm_read32(NABM_GLBCNT);
+        nabm_write32(NABM_GLBCNT, glbcnt | GLBCNT_GIE);
+        serial::write_str("[AC97] Global Interrupt Enable set (GIE=1)\r\n");
+    }
 }
 
 // ─── Public: IRQ handler ──────────────────────────────────────────────────────
@@ -716,4 +734,142 @@ pub fn dma_status() -> (u8, u8, u8) {
     let fill = FILL_IDX.load(Ordering::Relaxed);
     let in_flight = fill.wrapping_sub(civ) & 0x1F;
     (civ, fill, in_flight)
+}
+
+// ─── Diagnostic: dump AC97 register state to serial ──────────────────────────
+
+fn log_u8(v: u8) {
+    let h = b"0123456789ABCDEF";
+    serial::write_byte(h[((v >> 4) & 0xF) as usize]);
+    serial::write_byte(h[(v & 0xF) as usize]);
+}
+
+fn log_u64(v: u64) {
+    log_u32((v >> 32) as u32);
+    log_u32(v as u32);
+}
+
+/// Dump all AC97 hardware status registers to serial (COM1).
+/// Call from terminal via a debug command or periodically for diagnosis.
+pub fn dump_status() {
+    serial::write_str("[AC97-DIAG] === AC97 Status Dump ===\r\n");
+
+    if !AUDIO_READY.load(Ordering::Acquire) {
+        serial::write_str("[AC97-DIAG] Driver NOT ready\r\n");
+        return;
+    }
+
+    unsafe {
+        // Global Status Register
+        let glb_sts = nabm_read32(NABM_GLBSTS);
+        serial::write_str("[AC97-DIAG] GLBSTS=0x"); log_u32(glb_sts); serial::write_str("\r\n");
+
+        // Global Control Register
+        let glb_cnt = nabm_read32(NABM_GLBCNT);
+        serial::write_str("[AC97-DIAG] GLBCNT=0x"); log_u32(glb_cnt); serial::write_str("\r\n");
+
+        // PCM-Out channel status
+        let sr   = pco_read_sr();
+        let civ  = pco_read_civ();
+        let cr   = pco_read_cr();
+        let picb = nabm_read16(PCO_BASE + PCO_OFF_PICB);
+        let piv  = nabm_read8(PCO_BASE + PCO_OFF_PIV);
+        let bdbar= nabm_read32(PCO_BASE + PCO_OFF_BDBAR);
+
+        serial::write_str("[AC97-DIAG] PCO_SR=0x");   log_u16(sr);   serial::write_str("\r\n");
+        serial::write_str("[AC97-DIAG]   DCH=");    serial::write_byte(if sr & SR_DCH   != 0 { b'1' } else { b'0' });
+        serial::write_str(" CELV=");   serial::write_byte(if sr & SR_CELV  != 0 { b'1' } else { b'0' });
+        serial::write_str(" LVBCI=");  serial::write_byte(if sr & SR_LVBCI != 0 { b'1' } else { b'0' });
+        serial::write_str(" BCIS=");   serial::write_byte(if sr & SR_BCIS  != 0 { b'1' } else { b'0' });
+        serial::write_str(" FIFOE=");  serial::write_byte(if sr & SR_FIFOE != 0 { b'1' } else { b'0' });
+        serial::write_str("\r\n");
+
+        serial::write_str("[AC97-DIAG] PCO_CIV=0x"); log_u8(civ);
+        serial::write_str(" PIV=0x"); log_u8(piv);
+        serial::write_str(" PICB=0x"); log_u16(picb);
+        serial::write_str("\r\n");
+
+        serial::write_str("[AC97-DIAG] PCO_CR=0x"); log_u8(cr);
+        serial::write_str("  RPBM="); serial::write_byte(if cr & CR_RPBM != 0 { b'1' } else { b'0' });
+        serial::write_str(" IOCE=");  serial::write_byte(if cr & CR_IOCE  != 0 { b'1' } else { b'0' });
+        serial::write_str(" LVBIE="); serial::write_byte(if cr & CR_LVBIE != 0 { b'1' } else { b'0' });
+        serial::write_str("\r\n");
+
+        serial::write_str("[AC97-DIAG] BDBAR=0x"); log_u32(bdbar); serial::write_str("\r\n");
+
+        // Software state
+        let fill = FILL_IDX.load(Ordering::Relaxed);
+        let dma  = DMA_RUNNING.load(Ordering::Relaxed);
+        serial::write_str("[AC97-DIAG] FILL_IDX="); log_u8(fill);
+        serial::write_str(" DMA_RUNNING="); serial::write_byte(if dma { b'1' } else { b'0' });
+        serial::write_str("\r\n");
+
+        // NAM registers
+        let master = nam_read16(NAM_MASTER_VOL);
+        let pcm    = nam_read16(NAM_PCM_VOL);
+        let rate   = nam_read16(NAM_PCM_FRONT_RATE);
+        serial::write_str("[AC97-DIAG] NAM: MASTER_VOL=0x"); log_u16(master);
+        serial::write_str(" PCM_VOL=0x"); log_u16(pcm);
+        serial::write_str(" RATE=0x"); log_u16(rate);
+        serial::write_str("\r\n");
+    }
+
+    serial::write_str("[AC97-DIAG] === End Status Dump ===\r\n");
+}
+
+// ─── Diagnostic: memory map dump to serial ────────────────────────────────────
+
+/// Dump audio DMA buffer locations vs. framebuffer to serial.
+/// Proves (or disproves) memory isolation between audio and video.
+pub fn dump_mem_map() {
+    serial::write_str("[AC97-MEM] === Audio Memory Map ===\r\n");
+
+    if !AUDIO_READY.load(Ordering::Acquire) {
+        serial::write_str("[AC97-MEM] Driver NOT ready — no DMA buffers allocated\r\n");
+        return;
+    }
+
+    unsafe {
+        // BDL array
+        serial::write_str("[AC97-MEM] BDL  phys=0x"); log_u32(BDL_PHYS);
+        serial::write_str("  virt=0x"); log_u64(BDL_VIRT);
+        serial::write_str("\r\n");
+
+        // Per-entry DMA buffers (show first, last, and min/max range)
+        let mut min_phys: u32 = 0xFFFF_FFFF;
+        let mut max_phys: u32 = 0;
+        for i in 0..BDL_ENTRIES {
+            let p = BUF_PHYS[i];
+            if p < min_phys { min_phys = p; }
+            if p > max_phys { max_phys = p; }
+        }
+        serial::write_str("[AC97-MEM] PCM bufs[0] phys=0x"); log_u32(BUF_PHYS[0]);
+        serial::write_str("  virt=0x"); log_u64(BUF_VIRT[0]);
+        serial::write_str("\r\n");
+        serial::write_str("[AC97-MEM] PCM bufs[31] phys=0x"); log_u32(BUF_PHYS[31]);
+        serial::write_str("  virt=0x"); log_u64(BUF_VIRT[31]);
+        serial::write_str("\r\n");
+        serial::write_str("[AC97-MEM] PCM range phys=0x"); log_u32(min_phys);
+        serial::write_str(" .. 0x"); log_u32(max_phys + 0x1000);
+        serial::write_str("  ("); log_u32((BDL_ENTRIES as u32) * 4096); serial::write_str(" bytes)\r\n");
+    }
+
+    // Framebuffer info
+    if let Some(fb) = crate::arch::x86_64::framebuffer::info() {
+        let fb_virt = fb.address as u64;
+        let hhdm = crate::arch::x86_64::boot::hhdm_offset().unwrap_or(0);
+        let fb_phys = fb_virt.wrapping_sub(hhdm);
+        let fb_size = fb.pitch * fb.height;
+        serial::write_str("[AC97-MEM] FB   phys=0x"); log_u64(fb_phys);
+        serial::write_str("  virt=0x"); log_u64(fb_virt);
+        serial::write_str("\r\n");
+        serial::write_str("[AC97-MEM] FB   size=0x"); log_u64(fb_size);
+        serial::write_str(" ("); log_u64(fb.width); serial::write_str("x"); log_u64(fb.height);
+        serial::write_str("  pitch="); log_u64(fb.pitch);
+        serial::write_str(")\r\n");
+    } else {
+        serial::write_str("[AC97-MEM] FB   not available\r\n");
+    }
+
+    serial::write_str("[AC97-MEM] === End Memory Map ===\r\n");
 }

@@ -240,6 +240,8 @@ macro_rules! exception_with_error {
 }
 
 // IRQ handler stub: no error code, sends EOI
+// CRITICAL: saves all GPRs AND full FPU/SSE state (fxsave/fxrstor) so that
+//           interrupts don't corrupt XMM registers used by DOOM rendering.
 macro_rules! irq_handler {
     ($name:ident, $irq:expr) => {
         #[unsafe(naked)]
@@ -261,9 +263,18 @@ macro_rules! irq_handler {
                 "push r13",
                 "push r14",
                 "push r15",
-                "mov rdi, rsp",
+                // ── Save FPU/SSE state (512 bytes, must be 16-byte aligned) ──
+                // rbp is already saved on the stack; re-use it as a frame ptr
+                "mov rbp, rsp",        // save GPR-area pointer
+                "sub rsp, 512",
+                "and rsp, -16",        // force 16-byte alignment for fxsave
+                "fxsave [rsp]",
+                "mov rdi, rbp",        // saved_state = GPR save area
                 "mov rsi, {}",
                 "call {}",
+                // ── Restore FPU/SSE state ──
+                "fxrstor [rsp]",
+                "mov rsp, rbp",        // restore exact pre-fxsave RSP
                 "pop r15",
                 "pop r14",
                 "pop r13",
@@ -325,7 +336,7 @@ irq_handler!(irq_keyboard, 1u64);
 irq_handler!(irq_cascade, 2u64);
 
 // ── APIC one-shot timer: vector 48, NOT routed through PIC ──────────────────
-/// Raw APIC timer ISR stub — saves GPRs, calls apic_timer_dispatch, ACKs APIC, restores, iretq.
+/// Raw APIC timer ISR stub — saves GPRs + FPU/SSE, calls dispatch, restores, iretq.
 #[unsafe(naked)]
 pub extern "C" fn apic_timer_isr() {
     naked_asm!(
@@ -345,8 +356,16 @@ pub extern "C" fn apic_timer_isr() {
         "push r13",
         "push r14",
         "push r15",
-        "mov rdi, rsp",
+        // ── Save FPU/SSE state (512 bytes, 16-byte aligned) ──
+        "mov rbp, rsp",        // save GPR-area pointer
+        "sub rsp, 512",
+        "and rsp, -16",        // 16-byte align for fxsave
+        "fxsave [rsp]",
+        "mov rdi, rbp",        // saved_state = GPR save area
         "call {}",
+        // ── Restore FPU/SSE state ──
+        "fxrstor [rsp]",
+        "mov rsp, rbp",        // restore exact pre-fxsave RSP
         "pop r15",
         "pop r14",
         "pop r13",

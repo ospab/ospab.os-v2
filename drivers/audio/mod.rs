@@ -32,6 +32,7 @@ static ACTIVE_DRIVER: AtomicU8 = AtomicU8::new(0);
 pub fn init() -> bool {
     if ac97::init() {
         ACTIVE_DRIVER.store(1, Ordering::Relaxed);
+        ac97::enable_interrupts(); // Enable GIE — must happen AFTER IDT is set up
         return true;
     }
     if hda::init() {
