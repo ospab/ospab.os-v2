@@ -20,6 +20,7 @@ pub fn handle_ipv4(data: &[u8]) {
     if data.len() < total_len || total_len < header_len { return; }
 
     let protocol = data[9];
+    let ttl      = data[8];
     let _src_ip = [data[12], data[13], data[14], data[15]];
     let dst_ip  = [data[16], data[17], data[18], data[19]];
 
@@ -30,7 +31,7 @@ pub fn handle_ipv4(data: &[u8]) {
     let payload = &data[header_len..total_len];
 
     match protocol {
-        PROTO_ICMP => super::icmp::handle_icmp(payload, _src_ip),
+        PROTO_ICMP => super::icmp::handle_icmp(payload, _src_ip, ttl),
         PROTO_UDP  => super::udp::handle_udp(payload, _src_ip),
         _ => {}
     }

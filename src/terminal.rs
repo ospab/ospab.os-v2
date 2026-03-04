@@ -1514,24 +1514,93 @@ fn cmd_ping(args: &str) {
         return;
     }
     if args.is_empty() {
-        err_print("Usage: ping <ip-address|hostname> [count]\n");
+        err_print("Usage: ping [-c count] [-i interval] [-s size] [-W timeout] <destination>\n");
         dim_print("  Example: ping 10.0.2.2\n");
-        dim_print("  Example: ping gateway\n");
+        dim_print("  Example: ping -c 5 gateway\n");
         return;
     }
 
-    // Parse IP and optional count
-    let (ip_str, count_str) = match args.find(' ') {
-        Some(pos) => (&args[..pos], args[pos + 1..].trim()),
-        None => (args, "4"),
-    };
+    // ── Parse arguments ─────────────────────────────────────────────────────
+    let mut count: Option<u32> = None;       // None = infinite (until Ctrl+C)
+    let mut interval_us: u64 = 1_000_000;    // 1 second default
+    let mut payload: usize = 56;             // Linux default
+    let mut timeout_us: u64 = 3_000_000;     // 3 seconds default
+    let mut target_str: &str = "";
 
-    let ip = match parse_ip(ip_str) {
+    {
+        let mut words = args.split_whitespace();
+        while let Some(w) = words.next() {
+            match w {
+                "-c" => {
+                    if let Some(v) = words.next() {
+                        count = parse_u32(v);
+                        if count == Some(0) {
+                            err_print("ping: bad value for -c\n");
+                            return;
+                        }
+                    } else {
+                        err_print("ping: -c requires a value\n");
+                        return;
+                    }
+                }
+                "-i" => {
+                    if let Some(v) = words.next() {
+                        interval_us = match parse_seconds_us(v) {
+                            Some(us) if us > 0 => us,
+                            _ => { err_print("ping: bad value for -i\n"); return; }
+                        };
+                    } else {
+                        err_print("ping: -i requires a value\n");
+                        return;
+                    }
+                }
+                "-s" => {
+                    if let Some(v) = words.next() {
+                        payload = match parse_u32(v) {
+                            Some(n) if n <= 1458 => n as usize,
+                            _ => { err_print("ping: -s must be 0..1458\n"); return; }
+                        };
+                    } else {
+                        err_print("ping: -s requires a value\n");
+                        return;
+                    }
+                }
+                "-W" => {
+                    if let Some(v) = words.next() {
+                        timeout_us = match parse_seconds_us(v) {
+                            Some(us) if us > 0 => us,
+                            _ => { err_print("ping: bad value for -W\n"); return; }
+                        };
+                    } else {
+                        err_print("ping: -W requires a value\n");
+                        return;
+                    }
+                }
+                _ if w.starts_with('-') => {
+                    err_print("ping: unknown option: ");
+                    err_print(w);
+                    puts("\n");
+                    return;
+                }
+                _ => {
+                    target_str = w;
+                }
+            }
+        }
+    }
+
+    if target_str.is_empty() {
+        err_print("ping: missing destination\n");
+        return;
+    }
+
+    // ── Resolve destination ─────────────────────────────────────────────────
+    let ip = match parse_ip(target_str) {
         Some(ip) => ip,
-        None => match ospab_os::net::resolver::resolve_host(ip_str) {
+        None => match ospab_os::net::resolver::resolve_host(target_str) {
             Ok(ip) => {
                 puts("Resolved ");
-                puts(ip_str);
+                puts(target_str);
                 puts(" -> ");
                 print_ip(ip);
                 puts("\n");
@@ -1539,99 +1608,208 @@ fn cmd_ping(args: &str) {
             }
             Err(_) => {
                 err_print("Cannot resolve: ");
-                err_print(ip_str);
+                err_print(target_str);
                 puts("\n");
-                dim_print("  Not an IP and not found in /etc/hosts\n");
                 return;
             }
         },
     };
 
-    let count = parse_u32(count_str).unwrap_or(4).min(100);
+    // ── ARP warm-up ─────────────────────────────────────────────────────────
+    if ospab_os::net::arp::cache_lookup(ip).is_none() {
+        ospab_os::net::arp::send_request(ip);
+        let arp_end = ospab_os::arch::x86_64::tsc::tsc_stamp_us() + 500_000;
+        while ospab_os::arch::x86_64::tsc::tsc_stamp_us() < arp_end {
+            ospab_os::net::poll_rx();
+            if ospab_os::net::arp::cache_lookup(ip).is_some() { break; }
+            ospab_os::core::scheduler::sys_yield();
+        }
+    }
 
+    // ── Header ──────────────────────────────────────────────────────────────
+    // PING 10.0.2.2 (10.0.2.2) 56(84) bytes of data.
+    let total_ip = 20 + 8 + payload;
     puts("PING ");
     print_ip(ip);
-    puts(" ");
-    print_dec(count as u64);
-    puts(" packets (press Ctrl+C to stop)\n");
+    puts(" (");
+    print_ip(ip);
+    puts(") ");
+    print_dec(payload as u64);
+    puts("(");
+    print_dec(total_ip as u64);
+    puts(") bytes of data.\n");
 
-    // Prime the receive queue
     ospab_os::net::poll_rx();
+    CTRL_C.store(false, Ordering::Relaxed);
 
-    let mut sent = 0u32;
-    let mut received = 0u32;
-    let mut interrupted = false;
+    let mut sent: u64      = 0;
+    let mut received: u64  = 0;
+    let mut seq: u16       = 1;
+    let mut interrupted    = false;
 
-    'outer: for seq in 0..count {
-        // Check Ctrl+C before sending
-        if check_ctrl_c() { interrupted = true; break 'outer; }
+    // RTT statistics in µs
+    let mut rtt_min: u64   = u64::MAX;
+    let mut rtt_max: u64   = 0;
+    let mut rtt_sum: u64   = 0;
+    let mut rtt_sum_sq: u64 = 0;
 
-        ospab_os::net::icmp::send_ping(ip, seq as u16);
+    loop {
+        // Respect -c count
+        if let Some(max) = count {
+            if sent >= max as u64 { break; }
+        }
+        if check_ctrl_c() { interrupted = true; break; }
+
+        // Send
+        ospab_os::net::icmp::send_ping_sized(ip, seq, payload);
         sent += 1;
 
-        // ─── Wait up to ~2 s for reply (200 ticks @ 100 Hz) ───
-        let deadline = ospab_os::arch::x86_64::idt::timer_ticks() + 200;
-        let mut reply: Option<(u16, u64)> = None;
+        // Wait for reply (TSC-based)
+        let mut reply = None;
+        let wait_start = ospab_os::arch::x86_64::tsc::tsc_stamp_us();
         loop {
             if check_ctrl_c() { interrupted = true; break; }
+            ospab_os::net::poll_rx();
             if let Some(r) = ospab_os::net::icmp::poll_reply() {
                 reply = Some(r);
                 break;
             }
-            if ospab_os::arch::x86_64::idt::timer_ticks() >= deadline {
+            let elapsed = ospab_os::arch::x86_64::tsc::tsc_stamp_us().saturating_sub(wait_start);
+            if elapsed >= timeout_us {
                 ospab_os::net::icmp::cancel_wait();
                 break;
             }
-            unsafe { asm!("hlt"); }
+            ospab_os::core::scheduler::sys_yield();
         }
+        if interrupted { break; }
 
-        if interrupted { break 'outer; }
-
+        // Display
         match reply {
-            Some((rseq, rtt_ms)) => {
+            Some(r) => {
                 received += 1;
-                puts("  Reply from ");
+                let rtt = r.rtt_us;
+                if rtt < rtt_min { rtt_min = rtt; }
+                if rtt > rtt_max { rtt_max = rtt; }
+                rtt_sum += rtt;
+                rtt_sum_sq += rtt.saturating_mul(rtt);
+
+                // "64 bytes from 10.0.2.2: icmp_seq=1 ttl=64 time=1.23 ms"
+                print_dec(r.nbytes);
+                puts(" bytes from ");
                 print_ip(ip);
-                puts(": seq=");
-                print_dec(rseq as u64);
+                puts(": icmp_seq=");
+                print_dec(seq as u64);
+                puts(" ttl=");
+                print_dec(r.ttl as u64);
                 puts(" time=");
-                if rtt_ms == 0 { puts("<1"); } else { print_dec(rtt_ms); }
-                puts("ms\n");
+                print_rtt_ms(rtt);
+                puts(" ms\n");
             }
             None => {
-                puts("  Request timed out (seq=");
+                err_print("Request timeout for icmp_seq ");
                 print_dec(seq as u64);
-                puts(")\n");
+                puts("\n");
             }
         }
 
-        // ─── 1-second inter-ping delay (100 ticks @ 100 Hz) ───
-        if seq + 1 < count {
-            let wait_until = ospab_os::arch::x86_64::idt::timer_ticks() + 100;
-            loop {
-                if check_ctrl_c() { interrupted = true; break; }
-                if ospab_os::arch::x86_64::idt::timer_ticks() >= wait_until { break; }
-                ospab_os::net::poll_rx();
-                unsafe { asm!("hlt"); }
-            }
-            if interrupted { break 'outer; }
+        seq = seq.wrapping_add(1);
+
+        // Check count limit after display
+        if let Some(max) = count {
+            if sent >= max as u64 { break; }
         }
+        if check_ctrl_c() { interrupted = true; break; }
+
+        // Inter-packet delay
+        let delay_start = ospab_os::arch::x86_64::tsc::tsc_stamp_us();
+        while ospab_os::arch::x86_64::tsc::tsc_stamp_us().saturating_sub(delay_start) < interval_us {
+            if check_ctrl_c() { interrupted = true; break; }
+            ospab_os::net::poll_rx();
+            ospab_os::core::scheduler::sys_yield();
+        }
+        if interrupted { break; }
     }
 
+    // ── Summary ─────────────────────────────────────────────────────────────
     if interrupted {
         framebuffer::draw_string("^C\n", FG_DIM, BG);
     }
-    puts("--- ping statistics ---\n");
-    print_dec(sent as u64);
-    puts(" transmitted, ");
-    print_dec(received as u64);
+
+    let lost = sent.saturating_sub(received);
+    let loss_pct = if sent > 0 { lost * 100 / sent } else { 0 };
+
+    puts("\n--- ");
+    print_ip(ip);
+    puts(" ping statistics ---\n");
+    print_dec(sent);
+    puts(" packets transmitted, ");
+    print_dec(received);
     puts(" received, ");
-    if sent > 0 {
-        print_dec(((sent - received) * 100 / sent) as u64);
-    } else {
-        puts("0");
-    }
+    print_dec(loss_pct);
     puts("% packet loss\n");
+
+    if received > 0 {
+        let avg = rtt_sum / received;
+        let mean_sq = rtt_sum_sq / received;
+        let sq_mean = avg.saturating_mul(avg);
+        let variance = mean_sq.saturating_sub(sq_mean);
+        let mdev = isqrt_u64(variance);
+        if rtt_min == u64::MAX { rtt_min = 0; }
+
+        puts("rtt min/avg/max/mdev = ");
+        print_rtt_ms(rtt_min);
+        puts("/");
+        print_rtt_ms(avg);
+        puts("/");
+        print_rtt_ms(rtt_max);
+        puts("/");
+        print_rtt_ms(mdev);
+        puts(" ms\n");
+    }
+}
+
+/// Print RTT in microseconds as "X.XX" milliseconds.
+fn print_rtt_ms(rtt_us: u64) {
+    let ms_int  = rtt_us / 1_000;
+    let ms_frac = (rtt_us % 1_000) / 10; // 2 decimal places
+    print_dec(ms_int);
+    framebuffer::draw_char('.', FG, BG);
+    framebuffer::draw_char((b'0' + ((ms_frac / 10) % 10) as u8) as char, FG, BG);
+    framebuffer::draw_char((b'0' + (ms_frac % 10) as u8) as char, FG, BG);
+}
+
+/// Parse "N" or "N.NNN" seconds → microseconds.
+fn parse_seconds_us(s: &str) -> Option<u64> {
+    let bytes = s.as_bytes();
+    let mut int_part: u64 = 0;
+    let mut frac: u64 = 0;
+    let mut frac_digits: u32 = 0;
+    let mut in_frac = false;
+    let mut has = false;
+    for &b in bytes {
+        if b == b'.' && !in_frac {
+            in_frac = true;
+        } else if b >= b'0' && b <= b'9' {
+            has = true;
+            if in_frac {
+                if frac_digits < 6 { frac = frac * 10 + (b - b'0') as u64; frac_digits += 1; }
+            } else {
+                int_part = int_part * 10 + (b - b'0') as u64;
+            }
+        } else { break; }
+    }
+    if !has { return None; }
+    while frac_digits < 6 { frac *= 10; frac_digits += 1; }
+    Some(int_part * 1_000_000 + frac)
+}
+
+/// Integer square root.
+fn isqrt_u64(n: u64) -> u64 {
+    if n == 0 { return 0; }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x { x = y; y = (x + n / x) / 2; }
+    x
 }
 
 fn cmd_ntpdate(args: &str) {

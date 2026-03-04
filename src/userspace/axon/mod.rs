@@ -1252,7 +1252,7 @@ fn cmd_axon_ping(args: &str) {
         crate::net::icmp::send_ping(ip, seq as u16);
 
         // Poll for reply with 3s timeout (TSC µs)
-        let mut reply: Option<(u16, u64)> = None;
+        let mut reply = None;
         let t0 = crate::arch::x86_64::tsc::tsc_stamp_us();
         while crate::arch::x86_64::tsc::tsc_stamp_us().wrapping_sub(t0) < 3_000_000 {
             reply = crate::net::icmp::poll_reply();
@@ -1261,15 +1261,16 @@ fn cmd_axon_ping(args: &str) {
         }
 
         match reply {
-            Some((_s, rtt_us)) => {
+            Some(r) => {
                 received += 1;
                 ok("64 bytes from "); puts(target);
+                let rtt_us = r.rtt_us;
                 if rtt_us < 1000 {
-                    puts(&format!(": icmp_seq={} ttl=64 time={} µs\n", seq, rtt_us));
+                    puts(&format!(": icmp_seq={} ttl={} time={} µs\n", seq, r.ttl, rtt_us));
                 } else {
                     let ms = rtt_us / 1000;
                     let frac = (rtt_us % 1000) / 10;
-                    puts(&format!(": icmp_seq={} ttl=64 time={}.{:02} ms\n", seq, ms, frac));
+                    puts(&format!(": icmp_seq={} ttl={} time={}.{:02} ms\n", seq, r.ttl, ms, frac));
                 }
             }
             None => {

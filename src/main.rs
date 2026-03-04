@@ -376,12 +376,14 @@ pub extern "C" fn _start() -> ! {
         let mut diag_ticks = 0u32;
         loop {
             ospab_os::net::poll_rx();
-            if let Some((seq, rtt)) = ospab_os::net::icmp::poll_reply() {
+            if let Some(r) = ospab_os::net::icmp::poll_reply() {
                 serial::write_str("[NET-TEST] PING REPLY! seq=");
-                serial_u32(seq as u32);
+                serial_u32(r.seq as u32);
                 serial::write_str(" rtt=");
-                serial_u32(rtt as u32);
-                serial::write_str("ms\r\n");
+                serial_u32((r.rtt_us / 1000) as u32);
+                serial::write_str("ms ttl=");
+                serial_u32(r.ttl as u32);
+                serial::write_str("\r\n");
                 got_reply = true;
                 break;
             }

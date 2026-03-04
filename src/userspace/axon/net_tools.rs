@@ -184,7 +184,7 @@ pub fn cmd_ping(args: &str) {
         crate::net::icmp::send_ping(ip, seq as u16);
 
         // Wait up to 3 s (300 ticks @ 100 Hz) for ICMP echo reply
-        let mut reply: Option<(u16, u64)> = None;
+        let mut reply = None;
         let deadline = crate::arch::x86_64::idt::timer_ticks() + 300;
         while crate::arch::x86_64::idt::timer_ticks() < deadline {
             reply = crate::net::icmp::poll_reply();
@@ -196,11 +196,12 @@ pub fn cmd_ping(args: &str) {
         }
 
         match reply {
-            Some((_s, ms)) => {
+            Some(r) => {
                 received += 1;
-                let display_ms = if ms == 0 { 1 } else { ms };
+                let rtt_us = r.rtt_us;
+                let display_ms = if rtt_us < 1000 { 1 } else { rtt_us / 1000 };
                 ok("64 bytes from "); puts(target);
-                puts(&format!(": icmp_seq={} ttl=64 time={}ms\n", seq, display_ms));
+                puts(&format!(": icmp_seq={} ttl={} time={}ms\n", seq, r.ttl, display_ms));
             }
             None => {
                 err("Request timeout for icmp_seq=");
