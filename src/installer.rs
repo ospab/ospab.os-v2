@@ -864,6 +864,10 @@ fn do_install(disk: VDisk, esp_size_mb: u64, hostname: &[u8], _password: &[u8], 
         }
     }
 
+    // Flush after all ESP file writes (EFI + kernel + limine.conf)
+    slog("[INSTALLER] Flushing write-cache after ESP files...\r\n");
+    disk_flush(disk.index);
+
     // ══════════════════════════════════════════════════════════════════════
     // 8 — AETERNA identity sector on root partition
     hdr!("AETERNA identity record");

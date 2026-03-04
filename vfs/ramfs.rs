@@ -125,7 +125,7 @@ pub fn init() {
         tree.insert(
             String::from("/etc/hosts"),
             RamNode::File(Vec::from(
-                b"# AETERNA /etc/hosts\n127.0.0.1\tlocalhost\n10.0.2.2\tgateway host\n10.0.2.3\tdns nameserver\n216.239.35.0\ttime1.google.com ntp\n216.239.35.4\ttime2.google.com\n162.159.200.1\ttime.cloudflare.com\n" as &[u8],
+                b"# AETERNA /etc/hosts\n127.0.0.1\tlocalhost\n10.0.2.2\tgateway router host\n10.0.2.3\tdns nameserver\n216.239.35.0\ttime1.google.com ntp\n216.239.35.4\ttime2.google.com\n162.159.200.1\ttime.cloudflare.com\n" as &[u8],
             )),
         );
 

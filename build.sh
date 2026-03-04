@@ -80,6 +80,18 @@ if [ ! -f "$KERNEL_BIN" ]; then
 fi
 
 echo "Kernel built: $KERNEL_BIN"
+
+# Strip debug symbols to reduce ESP footprint
+if command -v llvm-objcopy &>/dev/null; then
+    llvm-objcopy --strip-debug "$KERNEL_BIN"
+    echo "Stripped (llvm-objcopy): $(stat -c%s "$KERNEL_BIN" 2>/dev/null || stat -f%z "$KERNEL_BIN") bytes"
+elif command -v objcopy &>/dev/null; then
+    objcopy --strip-debug "$KERNEL_BIN"
+    echo "Stripped (objcopy): $(stat -c%s "$KERNEL_BIN" 2>/dev/null || stat -f%z "$KERNEL_BIN") bytes"
+else
+    echo "Note: no objcopy found — kernel not stripped"
+fi
+
 [ "$BUILD_ISO" = false ] && exit 0
 
 # --- Ensure Limine binaries (build from limine-10.8.2 if missing) ---
