@@ -1,0 +1,2 @@
+# Shell scripts: always LF in repo (avoids "bash\r" in WSL)
+*.sh text eol=lf

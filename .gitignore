@@ -6,6 +6,7 @@
 
 # Игнорируем сам White Paper (если хочешь держать его вне репо)
 ospab.os.docx
+tech-manifest.docx
 
 # --- Rust & Compilation ---
 # Игнорируем артефакты сборки ядра AETERNA
@@ -22,3 +23,12 @@ Cargo.lock
 
 # --- Logs ---
 *.log
+# --- Large binary artifacts (>100MB, use releases instead) ---
+isos/*.iso
+doom1.wad
+*.wad
+ospab.os.md
+review.md
+*.log
+tech-manifest-new.md
+ai-rules.md

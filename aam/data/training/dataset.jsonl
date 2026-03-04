@@ -1,0 +1,3 @@
+{"prompt": "Как установить пакет?", "completion": "Используй tomato install <name>.tmt"}
+{"prompt": "Как запустить ИИ?", "completion": "Команда aai chat"}
+{"prompt": "Кто создал систему?", "completion": "ospab"}

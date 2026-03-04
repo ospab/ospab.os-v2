@@ -1,0 +1,151 @@
+═══════════════════════════════════════════════════════════════════════════════
+                    AETERNA ФИЛОСОФИЯ И АРХИТЕКТУРА
+═══════════════════════════════════════════════════════════════════════════════
+
+AETERNA — это микроядерная операционная система на Rust для x86_64, разработанная как
+платформа для встроенного ИИ (AETERNA AI Model, AAM).
+
+───────────────────────────────────────────────────────────────────────────────
+1. ОСНОВНЫЕ ПРИНЦИПЫ
+───────────────────────────────────────────────────────────────────────────────
+
+1. Минимализм:
+   - Kernel написан на no_std Rust, без внешних зависимостей для ядра
+   - Использует встроенный allocator (linked_list_allocator) на 128 МиБ кучи
+   - Все модули строго модульны и переиспользуемы
+
+2. Безопасность:
+   - Типобезопасность Rust препятствует классам уязвимостей
+   - Аппаратная защита: GDT, IDT, PIC, современные CPU режимы
+   - Capability-based security для процессов (в разработке)
+
+3. AI-First Design:
+   - Встроенная трансформер-модель (AAM) с токенизатором
+   - Возможность выполнения вывода ML directly в kernel
+   - RAG (Retrieval-Augmented Generation) для контекстного обучения
+
+───────────────────────────────────────────────────────────────────────────────
+2. АРХИТЕКТУРА СИСТЕМЫ
+───────────────────────────────────────────────────────────────────────────────
+
+Boot Phase:
+  1. Limine bootloader (BIOS/UEFI hybrid)
+  2. x86_64 initialization: SSE, GDT, IDT
+  3. Memory setup: Heap allocation (128 MiB)
+  4. Hardware drivers: ATA PIO, AHCI SATA, PS/2 keyboard, PIC timer
+  5. Terminal shell (plum) — UNIX-like командный интерпретатор
+
+Kernel Components:
+  - arch/x86_64: Low-level CPU features, interrupts, framebuffer, serial I/O
+  - mm: Virtual memory, page table management, heap allocator
+  - vfs: RamFS (in-memory filesystem) + disk synchronization
+  - drivers: Блочные устройства (ATA, AHCI, NVMe), сеть (e1000, RTL8139)
+  - core: Scheduler, syscalls, process management
+  - fs: Виртуальная файловая система с поддержкой множественных mount points
+
+Userspace Integration:
+  - plum: Shell interpreter
+  - grape: Configuration utilities
+  - tomato: Package/module installer
+  - seed: Static process manager
+  - aai: AI Assistant CLI
+
+───────────────────────────────────────────────────────────────────────────────
+3. AETERNA AI MODEL (AAM)
+───────────────────────────────────────────────────────────────────────────────
+
+Архитектура:
+  - Encoder: Byte-level BPE (256 tokens)
+  - Hidden dim: 64
+  - Attention: Scaled dot-product (single head)
+  - FFN: 4x expansion, ReLU activation
+  - Output: Top-k sampling (k=5)
+
+Используется для:
+  - Командное выполнение (предсказание следующей команды)
+  - Поиск по документации (semantic search)
+  - Динамическое генерирование ответов (chatbot)
+
+───────────────────────────────────────────────────────────────────────────────
+4. ФАЙЛОВАЯ СИСТЕМА
+───────────────────────────────────────────────────────────────────────────────
+
+RamFS Layout:
+  /
+  ├── boot/
+  ├── dev/
+  ├── etc/
+  ├── tmp/
+  ├── var/
+  └── doom/           ← DOOM saves and configuration
+
+Persistence:
+  - LBA 2048 используется для persistent storage
+  - Deferred sync: изменения кэшируются в памяти, синхронизируются с диском
+    каждые ~10 секунд или по команде `sync`
+  - Позволяет быстрые операции без ударов по диску
+
+───────────────────────────────────────────────────────────────────────────────
+5. ТЕРМИНАЛ И КОМАНДНАЯ СТРОКА
+───────────────────────────────────────────────────────────────────────────────
+
+Команды:
+  ls [path]           - Перечисление директории
+  cat [file]          - Вывод содержимого файла
+  mkdir [path]        - Создание директории
+  touch [file]        - Создание пустого файла
+  rm [file]           - Удаление файла
+  echo [text]         - Вывод текста
+  sync                - Синхронизация FS с диском
+  meminfo             - Статистика памяти
+  uptime              - Время работы системы
+  dmesg               - Логи ядра
+  doom                - Запуск порта DOOM
+  aai [prompt]        - Ввод в AI assistant
+
+───────────────────────────────────────────────────────────────────────────────
+6. FUTURE ROADMAP
+───────────────────────────────────────────────────────────────────────────────
+
+Phase 1 (Current):
+  ✓ Microkernel base
+  ✓ VFS + RamFS
+  ✓ AAM tokenizer + inference
+  - Polishing, bug fixes
+
+Phase 2 (Preemptive Scheduler):
+  - Full process management
+  - Context switching via IRQ 0
+  - Multi-core support (if hardware permits)
+
+Phase 3 (Network):
+  - e1000/RTL8139 drivers
+  - TCP/IP stack
+  - DHCP client
+  - SSH-like remote shell
+
+Phase 4 (Advanced AI):
+  - Larger transformer models
+  - Fine-tuning on project docs
+  - Real-time knowledge base updates
+  - GPU acceleration (NVIDIA PTX)
+
+───────────────────────────────────────────────────────────────────────────────
+7. КАК НАЧАТЬ РАЗРАБОТКУ
+───────────────────────────────────────────────────────────────────────────────
+
+Build:
+  ./build.sh              # Full ISO build
+  ./build.sh kernel       # Only kernel
+
+Run:
+  qemu-system-x86_64 -cdrom isos/ospab-os-v2-N.iso -serial stdio
+
+Debug:
+  cargo +nightly check --release     # Syntax check
+  cargo build --release 2>&1 | grep -E "warning:|error:"
+
+───────────────────────────────────────────────────────────────────────────────
+AETERNA — это контролируемая, безопасная, AI-augmented операционная система
+для экспериментов в области встроенного машинного обучения и системного ПО.
+═══════════════════════════════════════════════════════════════════════════════

@@ -1,16 +1,16 @@
 [package]
 name = "ospab_os"
-version = "0.2.0"
-authors = ["ospab <your@email.com>"]
+version = "1.0.0"
+authors = ["ospab "]
 edition = "2021"
 
 [dependencies]
 # Базовые структуры данных без стандартной библиотеки
 volatile = "0.6.1"
 spin = "0.10.0"
-x86_64 = { version = "0.15.4", features = ["instructions"] }
 bitflags = "2.4"
 lazy_static = { version = "1.4", features = ["spin_no_std"] }
+linked_list_allocator = "0.10"
 
 # Для будущего парсинга конфигов ИИ
 crossbeam-utils = { version = "0.8", default-features = false }
@@ -18,4 +18,3 @@ crossbeam-utils = { version = "0.8", default-features = false }
 [profile.release]
 panic = "abort"
 lto = true          # Максимальная оптимизация для ИИ
-opt-level = 3       # Скорость превыше всего
