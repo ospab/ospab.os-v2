@@ -99,22 +99,11 @@ const SD_CTL_STRIPE: u32 = 0 << 16; // Stripe Control (single)
 const SD_STREAM_TAG: u32 = 1 << 20;
 
 // ─── HDA stream format (SDFMT) ────────────────────────────────────────────
-// Produced by: type=PCM, base=44.1kHz, mult=1x, div=/1, bits=16, ch=2
-// Bit [14]   = 0: PCM (implicit)
-// Bit [13]   = 1: 44.1 kHz base (0 = 48 kHz base)
-// Bits[13:11]= 001: base rate (44.1/48) — wait, let me recount:
-//
-// From HDA spec 1.0a, Section 3.7.1 (Stream Descriptor Format):
-//   [14]   Type: 0=PCM, 1=non-PCM
-//   [13]   Base: 0=48kHz family, 1=44.1kHz family
-//   [12:11] Mult: 00=1×, 01=2×, 10=3×, 11=4×
-//   [10:8]  Div:  000=/1, 001=/2, 010=/3, ...
-//   [7:4]   Bits: 0000=8b, 0001=16b, 0010=20b, 0011=24b, 0100=32b
-//   [3:0]   Chan: channels - 1  (0001 = 2ch stereo)
-//
-// 44100/1/1 16-bit 2ch = base=1 mult=00 div=000 bits=0001 chan=0001
-// = 0b0_1_00_000_0001_0001 = 0x2011
+// 44.1 kHz, 16-bit, stereo (base=1, mult=1x, div=1, bits=16, ch=2)
 const SDFMT_44100_16_STEREO: u16 = (1 << 13) | (0b0001 << 4) | 0b0001;
+// 48 kHz, 16-bit, stereo (base=0, mult=1x, div=1, bits=16, ch=2)
+// 48 kHz is universally supported by HDA codecs; 44.1 requires VRA negotiation.
+const SDFMT_48000_16_STEREO: u16 = (0 << 13) | (0b0001 << 4) | 0b0001;
 
 // ─── DMA Buffer Descriptor List Entry ─────────────────────────────────────
 #[repr(C)]
@@ -172,6 +161,9 @@ fn make_set_amp(codec: u8, nid: u8, payload: u16) -> u32 {
 
 // ─── Driver state ─────────────────────────────────────────────────────────
 static AUDIO_READY: AtomicBool = AtomicBool::new(false);
+
+/// Actual sample rate programmed into the stream (48000 Hz).
+static mut SAMPLE_RATE_HZ: u32 = 48000;
 
 /// MMIO base (virtual, via HHDM)
 static mut MMIO_BASE: u64 = 0;
@@ -414,8 +406,8 @@ unsafe fn setup_output_stream() -> bool {
         if crate::arch::x86_64::idt::timer_ticks() > timeout { break; }
     }
 
-    // Set stream format
-    sd_write16(sd, SD_OFF_FMT, SDFMT_44100_16_STEREO);
+    // Set stream format: 48 kHz, 16-bit, 2ch (universally supported by HDA codecs)
+    sd_write16(sd, SD_OFF_FMT, SDFMT_48000_16_STEREO);
 
     // Set Cyclic Buffer Length (total DMA ring size)
     sd_write32(sd, SD_OFF_CBL, DMA_TOTAL as u32);
@@ -438,99 +430,150 @@ unsafe fn setup_output_stream() -> bool {
 
 // ─── Codec enumeration and widget configuration ────────────────────────────
 
+/// Configure all widgets in the first Audio Function Group of the given codec.
+///
+/// Real-hardware approach:
+///  1. Power up every widget.
+///  2. For each Audio Output (DAC): assign stream 1/ch 0, enable output amp.
+///  3. For each Audio Mixer: enable the output amp AND all input amps.
+///     This is the critical step that most minimal drivers miss — on Realtek
+///     ALC series (and many others), the DAC → Mixer → Speaker pin path has
+///     every amp muted by default.
+///  4. For each Audio Selector: enable its output amp, select connection 0.
+///  5. For each Pin Complex: enable HP + OUT bits, set max amp, EAPD.
+///
+/// All amps are set to gain 0x7F (maximum) with mute=0 (unmuted).
+/// Stream format is 48 kHz / 16-bit / stereo — universally supported.
 unsafe fn configure_codec(codec: u8) {
-    let log_codec = || {
-        serial::write_str("[HDA] Codec ");
-        serial::write_str(if codec == 0 { "0" } else { "1" });
-    };
-
-    // Send function reset to codec root node
-    imm_send(make_get_param(codec, 0x00, PARAM_VENDOR_ID));
-    wait_ticks(1);
-
-    // Get codec root: node 0 — get audio function group start node
-    let node_count = imm_send(make_get_param(codec, 0x00, PARAM_NODE_COUNT));
-    let start_nid = (node_count >> 16) as u8;
-    let _count    = (node_count & 0xFF) as u8;
-
-    // For QEMU ICH6-HDA, audio function group is at NID=1
-    // Power up the audio function group and ALL sub-widgets
-    let afg = start_nid;
-
-    // Power state D0 for function group
-    imm_send(make_verb(codec, afg, VERB_SET_POWER_STATE, 0x00));
-    wait_ticks(2);
-
-    // Get widget start NID within AFG
-    let sub_nodes = imm_send(make_get_param(codec, afg, PARAM_NODE_COUNT));
-    let widget_start = (sub_nodes >> 16) as u8;
-    let widget_count = (sub_nodes & 0xFF) as u8;
-
-    log_codec();
-    serial::write_str(": AFG=");
-    serial_u8(afg);
-    serial::write_str(" widgets=");
-    serial_u8(widget_count);
+    // ── 0. Log codec vendor ─────────────────────────────────────────────────
+    let vendor = imm_send(make_get_param(codec, 0x00, PARAM_VENDOR_ID));
+    serial::write_str("[HDA] Codec vendor/device = 0x");
+    serial_u64(vendor as u64);
     serial::write_str("\r\n");
 
-    // Walk widgets, power up all, find output DAC (type 0x0) and pin (type 0x4)
-    let mut dac_nid: u8 = 0;
-    let mut pin_nid: u8 = 0;
+    // ── 1. Find Audio Function Group (AFG) ──────────────────────────────────
+    let root_nc   = imm_send(make_get_param(codec, 0x00, PARAM_NODE_COUNT));
+    let afg_nid   = (root_nc >> 16) as u8;   // first function group NID
+    let _fg_count = (root_nc & 0xFF) as u8;
 
-    for i in 0..widget_count {
-        let nid = widget_start + i;
+    // Power up AFG
+    imm_send(make_verb(codec, afg_nid, VERB_SET_POWER_STATE, 0x00));
+    wait_ticks(2);
 
-        // Power up every widget
+    // ── 2. Enumerate widgets ────────────────────────────────────────────────
+    let afg_nc       = imm_send(make_get_param(codec, afg_nid, PARAM_NODE_COUNT));
+    let widget_start = (afg_nc >> 16) as u8;
+    let widget_count = (afg_nc & 0xFF) as u8;
+    let widget_end   = widget_start.saturating_add(widget_count);
+
+    serial::write_str("[HDA] AFG NID=0x");
+    serial_u8(afg_nid);
+    serial::write_str(" widgets=");
+    serial_u8(widget_count);
+    serial::write_str(" (0x");
+    serial_u8(widget_start);
+    serial::write_str("–0x");
+    serial_u8(widget_end.saturating_sub(1));
+    serial::write_str(")\r\n");
+
+    // ── 3. Power up every widget first (some codecs won't respond otherwise) ─
+    for nid in widget_start..widget_end {
         imm_send(make_verb(codec, nid, VERB_SET_POWER_STATE, 0x00));
+    }
+    wait_ticks(3);
 
-        let cap = imm_send(make_get_param(codec, nid, PARAM_AUDIO_CAP));
+    // ── 4. Configure each widget ────────────────────────────────────────────
+    let mut first_dac: u8 = 0;
+
+    for nid in widget_start..widget_end {
+        let cap         = imm_send(make_get_param(codec, nid, PARAM_AUDIO_CAP));
         let widget_type = (cap >> 20) & 0xF;
 
         match widget_type {
-            0x0 => { // Audio Output (DAC)
-                if dac_nid == 0 { dac_nid = nid; }
+            0x0 => {
+                // ── Audio Output (DAC) ──────────────────────────────────────
+                // Only assign stream 1 to the very first DAC; the others stay
+                // silent (no stream) — this is intentional for basic mono/stereo.
+                if first_dac == 0 {
+                    first_dac = nid;
+                    // Stream format: 48 kHz, 16-bit, stereo
+                    imm_send(make_set_fmt(codec, nid, SDFMT_48000_16_STEREO));
+                    // Bind to stream TAG=1, channel 0
+                    imm_send(make_verb(codec, nid, VERB_SET_STREAM_CHAN, (1 << 4) | 0));
+                    serial::write_str("[HDA] DAC stream assigned: NID=0x");
+                    serial_u8(nid);
+                    serial::write_str("\r\n");
+                } else {
+                    // Power up but leave silent — still unmute its amp so the
+                    // downstream mixer can pass any signal through.
+                    imm_send(make_verb(codec, nid, VERB_SET_STREAM_CHAN, 0x00));
+                }
+                // Unmute output amp, max gain, both channels.
+                // Payload: bit15=output, bit13=left, bit12=right, bit7=0=unmute, gain=0x7F
+                imm_send(make_set_amp(codec, nid, 0xB07F));
             }
-            0x4 => { // Pin Complex
-                if pin_nid == 0 { pin_nid = nid; }
+
+            0x2 => {
+                // ── Audio Mixer ─────────────────────────────────────────────
+                // Critical: without enabling these amps, sound is silenced even
+                // if the DAC and pin are both configured correctly.
+                //
+                // Enable output amp on the mixer itself.
+                imm_send(make_set_amp(codec, nid, 0xB07F));
+
+                // Enable every input amp (up to 8 inputs; extras are harmless).
+                // Payload: bit14=input, bit13=left, bit12=right, bits[11:8]=index,
+                //          bit7=0=unmute, bits[6:0]=gain.
+                for idx in 0u16..8 {
+                    let inp_amp: u16 =
+                        (1 << 14) | (1 << 13) | (1 << 12) | (idx << 8) | 0x7F;
+                    imm_send(make_set_amp(codec, nid, inp_amp));
+                }
             }
+
+            0x3 => {
+                // ── Audio Selector ──────────────────────────────────────────
+                imm_send(make_set_amp(codec, nid, 0xB07F));
+                // Select first connection (default — usually DAC or mixer)
+                imm_send(make_verb(codec, nid, 0x701, 0x00)); // SET_CONNECT_SEL = 0
+            }
+
+            0x4 => {
+                // ── Pin Complex ─────────────────────────────────────────────
+                // Enable as output: HP_EN (bit7) + OUT_EN (bit6) = 0xC0.
+                // Setting both ensures we get sound from both line-out and HP jacks.
+                imm_send(make_verb(codec, nid, VERB_SET_PIN_WIDGET_CTL, 0xC0));
+
+                // Unmute pin output amp, max gain.
+                imm_send(make_set_amp(codec, nid, 0xB07F));
+
+                // EAPD: bit1=EAPD enable (powers external amplifier on laptops).
+                imm_send(make_verb(codec, nid, VERB_SET_EAPD, 0x02));
+
+                // Select first connection in the pin's connection list.
+                // On Realtek ALC series this is typically the mixer node.
+                imm_send(make_verb(codec, nid, 0x701, 0x00)); // SET_CONNECT_SEL = 0
+            }
+
             _ => {}
         }
     }
 
-    // Fallback: QEMU HDA fixed topology (NID 2 = DAC, NID 3 = Pin)
-    if dac_nid == 0 { dac_nid = 2; }
-    if pin_nid  == 0 { pin_nid  = 3; }
+    // ── 5. Fallback: QEMU fixed topology if no DAC was found ────────────────
+    if first_dac == 0 {
+        serial::write_str("[HDA] No DAC found during walk — using QEMU fallback (NID 2/3)\r\n");
+        imm_send(make_set_fmt(codec, 2, SDFMT_48000_16_STEREO));
+        imm_send(make_verb(codec, 2, VERB_SET_STREAM_CHAN, (1 << 4) | 0));
+        imm_send(make_set_amp(codec, 2, 0xB07F));
+        imm_send(make_verb(codec, 3, VERB_SET_PIN_WIDGET_CTL, 0xC0));
+        imm_send(make_set_amp(codec, 3, 0xB07F));
+        imm_send(make_verb(codec, 3, VERB_SET_EAPD, 0x02));
+        imm_send(make_verb(codec, 3, 0x701, 0x00));
+    }
 
-    log_codec();
-    serial::write_str(": DAC NID=");
-    serial_u8(dac_nid);
-    serial::write_str(" Pin NID=");
-    serial_u8(pin_nid);
-    serial::write_str("\r\n");
-
-    // Set stream format on DAC: stream 1, channel 0
-    imm_send(make_set_fmt(codec, dac_nid, SDFMT_44100_16_STEREO));
-    // Assign stream 1, channel 0 to DAC
-    imm_send(make_verb(codec, dac_nid, VERB_SET_STREAM_CHAN, (1 << 4) | 0));
-
-    // Set DAC amplifier: output, both channels, no mute, 0 dB (gain = 0x7F for QEMU)
-    // Payload: [15]=out, [14]=in, [13]=left, [12]=right, [7]=mute, [6:0]=gain
-    let amp_payload: u16 = (1 << 15) | (1 << 13) | (1 << 12) | 0x50;
-    imm_send(make_set_amp(codec, dac_nid, amp_payload));
-
-    // Enable pin: output enable + headphone (HP) enable
-    imm_send(make_verb(codec, pin_nid, VERB_SET_PIN_WIDGET_CTL, 0xC0)); // OUT | HP
-
-    // Pin amplifier: output enable, both channels, full gain
-    let pin_amp: u16 = (1 << 15) | (1 << 13) | (1 << 12) | 0x50;
-    imm_send(make_set_amp(codec, pin_nid, pin_amp));
-
-    // EAPD enable (external amplifier power)
-    imm_send(make_verb(codec, pin_nid, VERB_SET_EAPD, 0x02));
-
-    log_codec();
-    serial::write_str(": configured DAC+pin for stream 1\r\n");
+    serial::write_str("[HDA] Codec configured: 48kHz/16-bit/stereo, all amps enabled\r\n");
 }
+
 
 fn serial_u8(n: u8) {
     let hi = b"0123456789ABCDEF"[(n >> 4) as usize];
@@ -726,6 +769,11 @@ pub fn write_pcm(pcm: &[u8]) {
 /// Returns true if HDA is initialized and the stream is running.
 pub fn is_ready() -> bool {
     AUDIO_READY.load(Ordering::Relaxed)
+}
+
+/// Returns the sample rate the HDA stream was configured with (Hz).
+pub fn sample_rate() -> u32 {
+    unsafe { SAMPLE_RATE_HZ }
 }
 
 // ─── Serial formatting helpers ────────────────────────────────────────────

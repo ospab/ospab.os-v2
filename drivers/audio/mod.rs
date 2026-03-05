@@ -142,7 +142,8 @@ pub fn irq_line() -> u8 {
 /// Returns the PCM sample rate used by the active driver (Hz).
 pub fn sample_rate() -> u32 {
     match ACTIVE_DRIVER.load(Ordering::Relaxed) {
+        2 => hda::sample_rate(),    // actual rate programmed into the HDA stream
         3 => es1371::sample_rate(), // actual rate programmed into the ES1371 codec
-        _ => 44100,                 // AC97 / HDA default to 44100 Hz
+        _ => 44100,                 // AC97 default
     }
 }

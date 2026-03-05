@@ -122,6 +122,10 @@ struct AcpiState {
     pm1a_cnt_blk:    u32,
     /// PM1b Control Block I/O port (0 if not present)
     pm1b_cnt_blk:    u32,
+    /// PM1a Event Block I/O port (from FADT) — used for SCI status/enable
+    pm1a_evt_blk:    u32,
+    /// Length of the PM1 event register block in bytes (pm1_event_length from FADT)
+    pm1_event_len:   u8,
     /// SLP_TYPa value for S5 (shutdown) state
     slp_typa_s5:     u16,
     /// SLP_TYPb value for S5 (if PM1b exists)
@@ -140,6 +144,8 @@ static mut ACPI: AcpiState = AcpiState {
     initialized:   false,
     pm1a_cnt_blk:  0,
     pm1b_cnt_blk:  0,
+    pm1a_evt_blk:  0,
+    pm1_event_len: 0,
     slp_typa_s5:   0,
     slp_typb_s5:   0,
     reset_reg:     GenericAddress {
@@ -246,15 +252,47 @@ pub fn init() -> bool {
         ACPI.pm1a_cnt_blk = fadt.pm1a_control_block;
         ACPI.pm1b_cnt_blk = fadt.pm1b_control_block;
         ACPI.sci_irq = fadt.sci_interrupt;
+        ACPI.pm1a_evt_blk = fadt.pm1a_event_block;
+        ACPI.pm1_event_len = fadt.pm1_event_length;
 
         serial::write_str("[ACPI] PM1a_CNT_BLK: 0x");
         serial_hex(ACPI.pm1a_cnt_blk as u64);
+        serial::write_str("\r\n");
+        serial::write_str("[ACPI] PM1a_EVT_BLK: 0x");
+        serial_hex(ACPI.pm1a_evt_blk as u64);
+        serial::write_str(" SCI_IRQ=");
+        serial_dec(ACPI.sci_irq as u64);
         serial::write_str("\r\n");
 
         if ACPI.pm1b_cnt_blk != 0 {
             serial::write_str("[ACPI] PM1b_CNT_BLK: 0x");
             serial_hex(ACPI.pm1b_cnt_blk as u64);
             serial::write_str("\r\n");
+        }
+
+        // Take ACPI ownership from UEFI/SMM: set SCI_EN (bit 0) in PM1a_CNT.
+        // This routes ACPI events (including power button) to the OS via SCI IRQ
+        // instead of letting firmware handle them (which causes instant power-off).
+        if ACPI.pm1a_cnt_blk != 0 {
+            let cnt_port = ACPI.pm1a_cnt_blk as u16;
+            let cnt_val: u16;
+            asm!("in ax, dx", in("dx") cnt_port, out("ax") cnt_val, options(nomem, nostack));
+            asm!("out dx, ax", in("dx") cnt_port, in("ax") cnt_val | 1u16, options(nomem, nostack));
+            serial::write_str("[ACPI] SCI_EN set\r\n");
+
+            // Enable power-button SCI: PWRBTN_EN is bit 8 in PM1a_EVT_EN.
+            // PM1a_EVT_EN is in the upper half of the PM1 event block:
+            //   PM1a_EVT_BLK[0 .. len/2-1]  = PM1a_STS  (status, R/W1C)
+            //   PM1a_EVT_BLK[len/2 .. len-1] = PM1a_EN   (enable, R/W)
+            if ACPI.pm1a_evt_blk != 0 && ACPI.pm1_event_len >= 2 {
+                let half = (ACPI.pm1_event_len / 2) as u32;
+                let en_port = (ACPI.pm1a_evt_blk + half) as u16;
+                let en_val: u16;
+                asm!("in ax, dx", in("dx") en_port, out("ax") en_val, options(nomem, nostack));
+                // bit 8 = PWRBTN_EN
+                asm!("out dx, ax", in("dx") en_port, in("ax") en_val | (1u16 << 8), options(nomem, nostack));
+                serial::write_str("[ACPI] PWRBTN_EN set\r\n");
+            }
         }
 
         // Check for ACPI 2.0+ reset register
@@ -306,6 +344,32 @@ pub fn init() -> bool {
 /// Check if ACPI is available and initialized
 pub fn is_available() -> bool {
     unsafe { ACPI.initialized }
+}
+
+/// Returns true if the given IRQ number is the ACPI SCI interrupt.
+pub fn is_sci_irq(irq: u8) -> bool {
+    unsafe { ACPI.initialized && ACPI.sci_irq as u8 == irq }
+}
+
+/// Handle an ACPI SCI interrupt.
+/// Reads PM1a_STS; if the power-button bit (bit 8) is set, clears it and
+/// initiates a graceful ACPI shutdown.
+pub fn handle_sci() {
+    unsafe {
+        if !ACPI.initialized || ACPI.pm1a_evt_blk == 0 { return; }
+
+        let sts_port = ACPI.pm1a_evt_blk as u16;
+        let pm1_sts: u16;
+        asm!("in ax, dx", in("dx") sts_port, out("ax") pm1_sts, options(nomem, nostack));
+
+        if pm1_sts & (1u16 << 8) != 0 {
+            // PWRBTN_STS set — W1C to acknowledge, then shut down gracefully.
+            serial::write_str("[ACPI] Power button pressed — shutting down\r\n");
+            asm!("out dx, ax", in("dx") sts_port, in("ax") (1u16 << 8), options(nomem, nostack));
+            shutdown();
+        }
+        // If other STS bits are set we leave them for future handlers.
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

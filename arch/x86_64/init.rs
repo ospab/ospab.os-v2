@@ -37,10 +37,56 @@ pub fn enable_sse() {
     }
 }
 
+/// Enable AVX/AVX2: set CR4.OSXSAVE and configure XCR0 so that YMM registers
+/// are saved/restored by the hardware.  Without this, any VEX-encoded AVX
+/// instruction triggers #UD even when CPUID.7:EBX[5] reports AVX2 support.
+///
+/// Safe to call on pre-AVX CPUs — checks CPUID before touching any new bits.
+pub fn enable_avx() {
+    use core::arch::x86_64::__cpuid;
+    unsafe {
+        // CPUID leaf 1: ECX[26]=XSAVE, ECX[28]=AVX
+        let leaf1 = __cpuid(1);
+        if leaf1.ecx & (1 << 26) == 0 {
+            serial::write_str("[ARCH] XSAVE not supported, skipping AVX enable\r\n");
+            return;
+        }
+
+        // Set CR4.OSXSAVE (bit 18): tells CPU the OS will save XSTATE
+        asm!(
+            "mov rax, cr4",
+            "or rax, 0x40000",
+            "mov cr4, rax",
+            out("rax") _,
+            options(nostack, preserves_flags, nomem)
+        );
+
+        if leaf1.ecx & (1 << 28) == 0 {
+            serial::write_str("[ARCH] CR4.OSXSAVE set; AVX not present, XCR0 left as-is\r\n");
+            return;
+        }
+
+        // Write XCR0: enable x87 (bit 0) + SSE/XMM (bit 1) + AVX/YMM (bit 2)
+        asm!(
+            "xor ecx, ecx",   // XCR0 selector = 0
+            "xgetbv",          // EAX ← XCR0[31:0], EDX ← XCR0[63:32]
+            "or eax, 7",       // set bits 0,1,2
+            "xsetbv",
+            out("eax") _,
+            out("ecx") _,
+            out("edx") _,
+            options(nostack, nomem)
+        );
+
+        serial::write_str("[ARCH] AVX/YMM enabled (CR4.OSXSAVE + XCR0[2])\r\n");
+    }
+}
+
 /// Full arch init: SSE, Limine check, GDT, IDT, PIC, serial, framebuffer.
 pub fn init() {
     disable_interrupts();
     enable_sse();
+    enable_avx();
 
     serial::init();
     serial::write_str("[AETERNA] Serial OK\r\n");

@@ -531,6 +531,15 @@ extern "C" fn exception_dispatch(saved_state: *mut u8, vector: u64) {
 
 /// IRQ dispatcher - handles hardware interrupts, sends EOI
 extern "C" fn irq_dispatch(saved_state: *const u8, irq: u64) {
+    // ACPI SCI can be routed to any IRQ (FADT.sci_interrupt, typically 9).
+    // Handle it first so the power button is processed regardless of which
+    // IRQ slot the firmware chose.
+    if crate::acpi::is_sci_irq(irq as u8) {
+        crate::acpi::handle_sci();
+        crate::arch::x86_64::pic::send_eoi(irq as u8);
+        return;
+    }
+
     match irq {
         0 => {
             // Timer interrupt - tick counter
