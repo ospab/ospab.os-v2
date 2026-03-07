@@ -62,10 +62,10 @@ fn write_sys_status() {
 
         // State (9 chars fixed)
         let state: &[u8] = match s.state {
-            TaskState::Running => b"running  ",
-            TaskState::Ready   => b"ready    ",
-            TaskState::Waiting => b"waiting  ",
-            TaskState::Dead    => b"dead     ",
+            TaskState::Running => b"Running  ",
+            TaskState::Ready   => b"Ready    ",
+            TaskState::Waiting => b"Waiting  ",
+            TaskState::Dead    => b"Dead     ",
         };
         for &b in state { out.push(b); }
 
@@ -130,14 +130,12 @@ pub fn run(_args: &str) {
         line_num += 1;
         if line_num <= 2 { continue; } // skip PID header + dash line
 
-        // Format is:  PID<spaces>TICKS<spaces>STATE<spaces>NAME
-        // Fields are fixed-width separated by spaces.
-        let mut fields = line.splitn(4, |c: char| c.is_ascii_whitespace())
-                             .filter(|s| !s.is_empty());
-        let pid   = fields.next().unwrap_or("-");
-        let ticks = fields.next().unwrap_or("-");
-        let state = fields.next().unwrap_or("-");
-        let name  = fields.next().unwrap_or("?");
+        // Format is: PID(6) TICKS(11) STATE(9) NAME
+        // Fields are fixed-width padded with spaces.
+        let pid   = line.get(0..6).map(|s| s.trim()).unwrap_or("-");
+        let ticks = line.get(6..17).map(|s| s.trim()).unwrap_or("-");
+        let state = line.get(17..26).map(|s| s.trim()).unwrap_or("-");
+        let name  = line.get(26..).map(|s| s.trim()).unwrap_or("?");
 
         // PID
         puts("  ");

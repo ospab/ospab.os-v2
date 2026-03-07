@@ -94,7 +94,7 @@ pub fn cmd_top(_args: &str) {
 
     let total_ticks: u64 = snap[..count].iter().map(|t| t.cpu_ticks).sum();
 
-    hl("  top \u{2014} task snapshot\n");
+    hl("  top -- task snapshot\n");
     dim("  PID   CPU%   MEM(KiB)   TICKS      STATE    COMMAND\n");
     dim("  ---------------------------------------------------\n");
     for i in 0..count {

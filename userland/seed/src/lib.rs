@@ -241,7 +241,8 @@ pub fn init() {
     unsafe {
         if let Some(services) = SERVICES.as_mut() {
             for svc in services.iter_mut() {
-                if svc.name.as_str() == "kernel" {
+                // skip kernel (not spawnable) and seed (already spawned above)
+                if svc.name.as_str() == "kernel" || svc.name.as_str() == "seed" {
                     continue;
                 }
                 if svc.policy != RestartPolicy::Manual {
