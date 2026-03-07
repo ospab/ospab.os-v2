@@ -60,6 +60,7 @@ const FG_OK: u32      = 0x0000FF00;   // Green — success indicators
 const FG_PROMPT: u32  = 0x0000FF00;   // Green — prompt user@host
 const FG_PATH: u32    = 0x00FF8844;   // Blue-ish — prompt path (BGR)
 const FG_DIR: u32     = 0x00FF8844;   // Blue — directory names in ls
+const FG_HL: u32      = 0x0000CCFF;   // Cyan highlight
 const BG: u32         = 0x00000000;   // Black background
 
 // ─── Prompt ───
@@ -571,15 +572,6 @@ fn execute_command(cmd: &str) {
         "clear"   => cmd_clear(),
         "ver" | "version" => cmd_version(),
         "uname"   => cmd_uname(args),
-        "ls"      => { ospab_os::plum::preprocess(&alloc::format!("ls {}", args)); }
-        "pwd"     => { ospab_os::plum::preprocess("pwd"); }
-        "cd"      => { ospab_os::plum::preprocess(&alloc::format!("cd {}", args)); }
-        "cat"     => { ospab_os::plum::preprocess(&alloc::format!("cat {}", args)); }
-        "mkdir"   => { ospab_os::plum::preprocess(&alloc::format!("mkdir {}", args)); }
-        "touch"   => { ospab_os::plum::preprocess(&alloc::format!("touch {}", args)); }
-        "rm"      => { ospab_os::plum::preprocess(&alloc::format!("rm {}", args)); }
-        "save"    => { ospab_os::plum::preprocess("save"); }
-        "write"   => { ospab_os::plum::preprocess(&alloc::format!("write {}", args)); }
         "whoami"  => cmd_whoami(),
         "hostname"=> cmd_hostname(),
         "date"    => cmd_date(),
@@ -588,17 +580,11 @@ fn execute_command(cmd: &str) {
         "uptime"  => cmd_uptime(),
         "dmesg"   => cmd_dmesg(),
         "lsmem"   => cmd_lsmem(),
-        "lspci"   => cmd_lspci(),
-        "lsblk"   => ospab_os::axon::disk_tools::run_lsblk(args),
-        "fdisk"   => ospab_os::axon::disk_tools::run_fdisk(args),
-        "mkfs"    => ospab_os::axon::disk_tools::run_mkfs(args),
-        "mount"   => ospab_os::axon::disk_tools::run_mount(args),
-        "ping"    => cmd_ping(args),
         "ifconfig" | "ip" => cmd_ifconfig(),
         "netdiag"  => {
             puts("Running network diagnostics (output to serial COM1)...\n");
             ospab_os::net::diag::run_full_diagnostic();
-            puts("Done. Check serial output for full report.\n");
+            ospab_os::net::diag::run_screen_summary();
         }
         "soundtest" => cmd_soundtest(),
         "vol"      => cmd_vol(args),
@@ -606,6 +592,7 @@ fn execute_command(cmd: &str) {
         "ntpdate" => cmd_ntpdate(args),
         "sync"    => cmd_sync(),
         "dump_disk" => cmd_dump_disk(args),
+        "changelog" => cmd_changelog(),
         "reboot"  => cmd_reboot(),
         "shutdown" | "poweroff" | "halt" => cmd_shutdown(),
         "install" => cmd_install(),
@@ -616,18 +603,24 @@ fn execute_command(cmd: &str) {
         "seed"    => cmd_seed(args),
         "bash"    => cmd_bash(args),
         "doom"    => cmd_doom(args),
+        "ping"    => cmd_ping(args),
         "aai"     => cmd_aai(args),
         "bench"   => cmd_bench(args),
-        "export"  => { ospab_os::plum::preprocess(&alloc::format!("export {}", args)); }
-        "alias"   => { ospab_os::plum::preprocess(&alloc::format!("alias {}", args)); }
-        "unalias" => { ospab_os::plum::preprocess(&alloc::format!("unalias {}", args)); }
-        "env"     => { ospab_os::plum::preprocess("env"); }
-        "set"     => { ospab_os::plum::preprocess(&alloc::format!("set {}", args)); }
-        "unset"   => { ospab_os::plum::preprocess(&alloc::format!("unset {}", args)); }
-        "type"    => { ospab_os::plum::preprocess(&alloc::format!("type {}", args)); }
-        "source"  => { ospab_os::plum::preprocess(&alloc::format!("source {}", args)); }
-        "plum"    => { ospab_os::plum::preprocess("plum"); }
         _ => {
+            // Check for bash script or binary execution
+            if command.starts_with("./") || command.starts_with("/") {
+                if command.ends_with(".sh") {
+                    cmd_bash(command);
+                    return;
+                } else {
+                    dim_print("[SYS] Executing binary: ");
+                    puts(command);
+                    puts("\n");
+                    // In a full implementation, this would invoke the ELF loader (sys_spawn)
+                    return;
+                }
+            }
+
             // AXON coreutils
             if axon::dispatch(command, args) {
                 return;
@@ -772,6 +765,48 @@ fn cmd_help(args: &str) {
                 dim_print("  See: tutor ai\n");
                 return;
             }
+            "ls" => {
+                puts("ls [path]\n");
+                dim_print("  List directory contents. Supports long format via 'ls -l'.\n");
+                dim_print("  Directories are blue, files are white.\n");
+                return;
+            }
+            "cd" => {
+                puts("cd <path>\n");
+                dim_print("  Change working directory. Supports '..' for parent and '~' for home.\n");
+                return;
+            }
+            "pwd" => {
+                puts("pwd\n");
+                dim_print("  Print current working directory absolute path.\n");
+                return;
+            }
+            "mkdir" => {
+                puts("mkdir <directory>\n");
+                dim_print("  Create a new directory in the VFS.\n");
+                return;
+            }
+            "touch" => {
+                puts("touch <filename>\n");
+                dim_print("  Create an empty file if it doesn't exist.\n");
+                return;
+            }
+            "rm" => {
+                puts("rm <file>\n");
+                dim_print("  Delete a file from the VFS. Works only on files or empty directories.\n");
+                return;
+            }
+            "save" | "sync" => {
+                puts("save / sync\n");
+                dim_print("  Persist all in-memory VFS (RamFS) changes to the physical boot disk.\n");
+                dim_print("  Changes are lost on reboot if not saved!\n");
+                return;
+            }
+            "changelog" => {
+                puts("changelog\n");
+                dim_print("  Display the recent changes and version history for AETERNA OS.\n");
+                return;
+            }
             "cat" => {
                 puts("cat <path>\n");
                 dim_print("  Display file contents. Virtual files:\n");
@@ -800,12 +835,10 @@ fn cmd_help(args: &str) {
 
 // ── Help display helpers ───────────────────────────────────────────────────
 
-/// Pad to `target` width (ASCII characters only).
 fn help_pad(len: usize, target: usize) {
     for _ in 0..target.saturating_sub(len) { puts(" "); }
 }
 
-/// Print a section header: coloured "--[ NAME ]"
 fn help_sec(title: &str) {
     puts("\n");
     framebuffer::draw_string("  --[ ", FG_DIM, BG);
@@ -813,119 +846,171 @@ fn help_sec(title: &str) {
     framebuffer::draw_string(" ]\n", FG_DIM, BG);
 }
 
-/// Two-column command row: `cmd1  desc1   cmd2  desc2`
-fn help_row2(c1: &str, d1: &str, c2: &str, d2: &str) {
-    puts("  ");
-    framebuffer::draw_string(c1, FG, BG);
-    help_pad(c1.len(), 16);
-    framebuffer::draw_string(d1, FG_DIM, BG);
-    help_pad(d1.len(), 26);
-    framebuffer::draw_string(c2, FG, BG);
-    help_pad(c2.len(), 16);
-    framebuffer::draw_string(d2, FG_DIM, BG);
-    puts("\n");
-}
-
-/// Single-column command row: `cmd  desc` (full width)
 fn help_row1(c1: &str, d1: &str) {
     puts("  ");
     framebuffer::draw_string(c1, FG, BG);
-    help_pad(c1.len(), 16);
+    help_pad(c1.len(), 18);
     framebuffer::draw_string(d1, FG_DIM, BG);
     puts("\n");
 }
 
-/// Full help screen — all commands, no forced pagination.
+struct HelpCommand {
+    name: &'static str,
+    desc: &'static str,
+}
+
+struct HelpCategory {
+    title: &'static str,
+    cmds: &'static [HelpCommand],
+}
+
+const HELP_PAGES: &[HelpCategory] = &[
+    HelpCategory {
+        title: "NAVIGATION & SHELL",
+        cmds: &[
+            HelpCommand { name: "help",          desc: "This guide (PgUp/PgDn to scroll)" },
+            HelpCommand { name: "help <cmd>",    desc: "Per-command detailed usage" },
+            HelpCommand { name: "clear",         desc: "Clear screen (Ctrl+L)" },
+            HelpCommand { name: "history",       desc: "Show command history (Up/Down)" },
+            HelpCommand { name: "tutor [topic]", desc: "Interactive system tutorial" },
+            HelpCommand { name: "bash <script>", desc: "Run shell script (.sh)" },
+            HelpCommand { name: "plum",          desc: "Shell info and builtins" },
+            HelpCommand { name: "exit / q",      desc: "Exit shell (if in subshell)" },
+        ],
+    },
+    HelpCategory {
+        title: "SYSTEM & HARDWARE INFO",
+        cmds: &[
+            HelpCommand { name: "version",       desc: "OS + kernel version info" },
+            HelpCommand { name: "changelog",     desc: "Recent changes in this version" },
+            HelpCommand { name: "uname -a",      desc: "System identification" },
+            HelpCommand { name: "uptime",        desc: "Total system uptime" },
+            HelpCommand { name: "date",          desc: "System date and time" },
+            HelpCommand { name: "whoami / host", desc: "User and hostname info" },
+            HelpCommand { name: "dmesg",         desc: "Kernel event log (klog)" },
+            HelpCommand { name: "about",         desc: "AETERNA ASCII art & credits" },
+            HelpCommand { name: "free / meminfo",desc: "Memory usage and regions" },
+            HelpCommand { name: "lspci",         desc: "PCI device inventory" },
+            HelpCommand { name: "lsblk",         desc: "Block device list" },
+        ],
+    },
+    HelpCategory {
+        title: "FILESYSTEM & STORAGE",
+        cmds: &[
+            HelpCommand { name: "ls [path]",     desc: "List directory contents" },
+            HelpCommand { name: "cd <path>",     desc: "Change working directory" },
+            HelpCommand { name: "pwd",           desc: "Print current directory" },
+            HelpCommand { name: "cat <file>",    desc: "View file contents" },
+            HelpCommand { name: "mkdir <dir>",   desc: "Create new directory" },
+            HelpCommand { name: "touch <file>",  desc: "Create empty file" },
+            HelpCommand { name: "rm <file>",     desc: "Delete file or empty dir" },
+            HelpCommand { name: "cp / mv",       desc: "Copy or move files/dirs" },
+            HelpCommand { name: "find <p> <q>",  desc: "Search for files by name" },
+            HelpCommand { name: "df / du",       desc: "Disk and directory usage" },
+            HelpCommand { name: "tree",          desc: "Show file tree structure" },
+            HelpCommand { name: "save / sync",   desc: "Persist VFS changes to disk" },
+            HelpCommand { name: "fdisk / mkfs",  desc: "Partition and format disks" },
+        ],
+    },
+    HelpCategory {
+        title: "TEXT & NETWORKING",
+        cmds: &[
+            HelpCommand { name: "grep <p> <f>",  desc: "Search text patterns in files" },
+            HelpCommand { name: "wc / head / tail", desc: "Line/word count and snippets" },
+            HelpCommand { name: "sort / uniq",   desc: "Sort lines and unique filter" },
+            HelpCommand { name: "cut / awk",     desc: "Field-based text processing" },
+            HelpCommand { name: "xxd / nl",      desc: "Hex dump and line numbering" },
+            HelpCommand { name: "diff <f1> <f2>", desc: "Compare two files" },
+            HelpCommand { name: "ifconfig / ip", desc: "Network interface status" },
+            HelpCommand { name: "ping <ip>",     desc: "ICMP network echo test" },
+            HelpCommand { name: "ntpdate [ip]",  desc: "Sync time via SNTP" },
+            HelpCommand { name: "netstat",       desc: "Active network connections" },
+            HelpCommand { name: "netdiag",       desc: "Full hardware NIC diagnostics" },
+        ],
+    },
+    HelpCategory {
+        title: "USERLAND TOOLS & AI",
+        cmds: &[
+            HelpCommand { name: "grape <file>",  desc: "Text editor (nano-style)" },
+            HelpCommand { name: "tomato",        desc: "Package manager (repos)" },
+            HelpCommand { name: "seed [cmd]",    desc: "Init & service manager" },
+            HelpCommand { name: "doom",          desc: "Classic DOOM (1993)" },
+            HelpCommand { name: "aai chat <t>",  desc: "AI - LLM inference (ANE)" },
+            HelpCommand { name: "aai load <f>",  desc: "Load .tmt-ai model weights" },
+            HelpCommand { name: "aai bench",     desc: "ANE SIMD performance report" },
+            HelpCommand { name: "ps / top / kill", desc: "Process management" },
+        ],
+    },
+    HelpCategory {
+        title: "DIAGNOSTICS & BENCHMARKS",
+        cmds: &[
+            HelpCommand { name: "verify_mem",    desc: "Heap integrity stress test" },
+            HelpCommand { name: "verify_sched",  desc: "Scheduler & PIT rate test" },
+            HelpCommand { name: "verify_net",    desc: "Network stack integrity" },
+            HelpCommand { name: "verify_audio",  desc: "HDA driver test tone (440Hz)" },
+            HelpCommand { name: "soundtest",     desc: "Audio register dump" },
+            HelpCommand { name: "vol / mute",    desc: "Master volume control" },
+            HelpCommand { name: "bench [n]",     desc: "System latency tax benchmark" },
+            HelpCommand { name: "dump_disk",     desc: "Raw sector hex dump (LBA 2048)" },
+            HelpCommand { name: "reboot / halt", desc: "System control" },
+        ],
+    },
+];
+
 fn help_display() {
+    let mut current_page = 0;
+    
+    loop {
+        framebuffer::clear(BG);
+        framebuffer::set_cursor_pos(0, 0);
+
+        // Header
+        framebuffer::draw_string("  AETERNA OS ", FG_OK, BG);
+        framebuffer::draw_string("-- Command Reference  ", FG, BG);
+        framebuffer::draw_string("[ Page ", FG_DIM, BG);
+        print_dec((current_page + 1) as u64);
+        framebuffer::draw_string(" of ", FG_DIM, BG);
+        print_dec(HELP_PAGES.len() as u64);
+        framebuffer::draw_string(" ]\n", FG_DIM, BG);
+        framebuffer::draw_string("  ================================================================\n", FG_DIM, BG);
+
+        let page = &HELP_PAGES[current_page];
+        help_sec(page.title);
+        
+        for cmd in page.cmds {
+            help_row1(cmd.name, cmd.desc);
+        }
+
+        puts("\n\n");
+        framebuffer::draw_string("  [Arrows/PgUp/Dn] ", FG_HL, BG);
+        framebuffer::draw_string("Scroll  ", FG_DIM, BG);
+        framebuffer::draw_string("[Space/Enter] ", FG_HL, BG);
+        framebuffer::draw_string("Next  ", FG_DIM, BG);
+        framebuffer::draw_string("[Esc/Q] ", FG_HL, BG);
+        framebuffer::draw_string("Exit", FG_DIM, BG);
+
+        // Wait for input
+        let key = keyboard::poll_key();
+        match key {
+            Some(keyboard::KEY_PGDN) | Some(keyboard::KEY_DOWN) | Some(keyboard::KEY_RIGHT) | Some(' ') | Some('\n') => {
+                if current_page < HELP_PAGES.len() - 1 {
+                    current_page += 1;
+                } else {
+                    break; // Exit on last page
+                }
+            }
+            Some(keyboard::KEY_PGUP) | Some(keyboard::KEY_UP) | Some(keyboard::KEY_LEFT) => {
+                if current_page > 0 {
+                    current_page -= 1;
+                }
+            }
+            Some('\x1B') | Some('q') | Some('Q') => break,
+            _ => {}
+        }
+    }
+    
     framebuffer::clear(BG);
     framebuffer::set_cursor_pos(0, 0);
-
-    // Header
-    framebuffer::draw_string("  AETERNA Shell", FG_OK, BG);
-    framebuffer::draw_string(" -- Command Reference", FG, BG);
-    framebuffer::draw_string("  [ v", FG_DIM, BG);
-    framebuffer::draw_string(crate::version::VERSION_STR, FG_DIM, BG);
-    framebuffer::draw_string(" ]\n", FG_DIM, BG);
-    framebuffer::draw_string("  ", FG_DIM, BG);
-    framebuffer::draw_string("help <cmd>", FG_WARN, BG);
-    framebuffer::draw_string(" per-command detail   ", FG_DIM, BG);
-    framebuffer::draw_string("tutor <topic>", FG_WARN, BG);
-    framebuffer::draw_string(" guided walkthroughs\n", FG_DIM, BG);
-    framebuffer::draw_string("  ================================================================\n", FG_DIM, BG);
-
-    // NAVIGATION & SHELL
-    help_sec("NAVIGATION & SHELL");
-    help_row2("help",          "This guide",              "clear",         "Clear screen  (Ctrl+L)");
-    help_row2("help <cmd>",    "Per-command detail",      "history",       "Command history");
-    help_row2("tutor <topic>", "Guided walkthroughs",     "tutor topics",  "List all topics");
-    dim_print("  Keys: Up/Down=history  Ctrl+C=cancel  Ctrl+L=clear\n");
-
-    // FILESYSTEM
-    help_sec("FILESYSTEM");
-    help_row2("ls [path]",     "List directory",          "cd <path>",     "Change directory");
-    help_row2("cat <file>",    "View file",               "pwd",           "Working directory");
-    help_row2("mkdir <dir>",   "Create directory",        "touch <file>",  "Create empty file");
-    help_row2("rm <file>",     "Delete file",             "save",          "Persist to disk");
-    help_row2("echo text",     "Print / write  (echo t>f)","write <f> <t>", "Write text to file");
-
-    // SYSTEM INFO
-    help_sec("SYSTEM INFO");
-    help_row2("version",       "OS + kernel version",     "uname [-a]",    "System identification");
-    help_row2("about",         "AETERNA ASCII art",        "whoami",        "Current user");
-    help_row2("hostname",      "System hostname",         "date",          "Date and uptime");
-    help_row2("uptime",        "Uptime counter",           "dmesg",         "Kernel event log");
-
-    // HARDWARE & MEMORY
-    help_sec("HARDWARE & MEMORY");
-    help_row2("free",          "Memory overview",         "meminfo",       "Detailed mem stats");
-    help_row2("lsmem",         "Memory region list",      "lspci",         "PCI device listing");
-    help_row2("lsblk",         "Block devices",           "soundtest",     "Audio diagnostics");
-    help_row2("vol [0-100]",   "Volume control",          "mute",          "Toggle mute");
-    help_row2("fdisk <dev>",   "Partition info",          "mkfs",          "Format partition");
-    help_row2("mount",         "Mount filesystem",        "dump_disk",     "Hex dump LBA 2048");
-
-    // NETWORKING
-    help_sec("NETWORKING");
-    help_row2("ifconfig",      "Interface status/config", "ping <ip>",     "ICMP echo test");
-    help_row2("ntpdate [ip]",  "NTP time sync",           "netdiag",       "Full NIC diagnostics");
-
-    // STORAGE & SYSTEM CONTROL
-    help_sec("STORAGE & CONTROL");
-    help_row2("sync",          "Flush VFS to disk",       "install",       "OS installer TUI");
-    help_row2("reboot",        "Reboot system",           "shutdown",      "Power off  (poweroff/halt)");
-    help_row2("ps",            "Process list",            "top",           "Process activity");
-
-    // USERLAND TOOLS
-    help_sec("USERLAND TOOLS");
-    help_row2("grape <file>",  "Text editor (nano-like)", "tomato",        "Package manager");
-    help_row2("seed [cmd]",    "Init / service manager",  "doom",          "Classic DOOM (1993)");
-    help_row2("bash <script>", "Run shell script",        "plum",          "Shell info");
-
-    // AI — ANE
-    help_sec("AI -- AETERNA NEURAL ENGINE  (ANE)");
-    help_row2("aai load <f>",  "Load .tmt-ai model",      "aai info",      "Model metadata");
-    help_row2("aai bench",     "SIMD GEMM benchmark",     "aai chat <t>",  "Run inference");
-    help_row1("aai summarize", "Entropy + text statistics    (see: tutor ai  /  help aai)");
-
-    // BENCHMARKS
-    help_sec("BENCHMARKS");
-    help_row1("bench [iters]", "System Latency Tax (RDTSC FMA cycles)  default 2048 iterations");
-
-    // SHELL BUILTINS
-    help_sec("SHELL BUILTINS  (plum)");
-    help_row2("export VAR=v",  "Set environment variable", "alias n=cmd",   "Create alias");
-    help_row2("env",           "Show all variables",       "set",           "Show/set vars");
-    help_row2("unset <var>",   "Remove variable",          "unalias <n>",   "Remove alias");
-    help_row2("type <cmd>",    "Find command type",        "source <f>",    "Run script file");
-
-    // AXON COREUTILS
-    help_sec("TEXT & FILE UTILS  (axon coreutils)");
-    dim_print("  wc  head  tail  grep  sort  uniq  cut  awk  diff     text processing\n");
-    dim_print("  cp  mv  find  du  tree  stat  xxd  nl  df  which     file utilities\n");
-    dim_print("  kill  printf  xargs                                   system utils\n");
-    dim_print("  (see: tutor axon  for examples and full details)\n");
-
-    puts("\n");
 }
 
 fn cmd_echo(args: &str) {
@@ -1364,6 +1449,23 @@ fn print_pci_class(class: u8, subclass: u8) {
         (0x0C, 0x03)  => puts("USB Controller      "),
         (0x0C, _)     => puts("Serial Bus Ctrl     "),
         _             => puts("Unknown Device      "),
+    }
+}
+
+fn cmd_changelog() {
+    match ospab_os::fs::read_file("/CHANGELOG.md") {
+        Some(data) => {
+            if let Ok(text) = core::str::from_utf8(&data) {
+                puts(text);
+            } else {
+                err_print("changelog: file is corrupted or not UTF-8\n");
+            }
+        }
+        None => {
+            puts("AETERNA Changelog - See: /CHANGELOG.md\n");
+            dim_print("No changelog found in VFS. Showing latest version info:\n");
+            cmd_version();
+        }
     }
 }
 

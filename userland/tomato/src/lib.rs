@@ -451,6 +451,8 @@ fn show_help() {
 }
 
 fn cmd_sync() {
+    warn("  [SIMULATION MODE] Package operations run against a built-in local database.\n");
+    warn("  No network access; no real binaries are installed.\n\n");
     puts(":: Synchronizing package databases...\n");
     // Simulate sync — write DB index to VFS
     let pkgs = builtin_packages();
@@ -471,6 +473,8 @@ fn cmd_sync() {
 }
 
 fn cmd_upgrade() {
+    warn("  [SIMULATION MODE] Package operations run against a built-in local database.\n");
+    warn("  No network access; no real binaries are installed.\n\n");
     cmd_sync();
     puts(":: Starting full system upgrade...\n");
 
@@ -515,6 +519,7 @@ fn cmd_upgrade() {
 }
 
 fn cmd_search(query: &str) {
+    warn("  [SIMULATION MODE] Searching built-in package database (no network).\n\n");
     let pkgs = builtin_packages();
     let query_lower = query.as_bytes();
     let mut found = 0usize;
@@ -557,6 +562,7 @@ fn cmd_install(name: &str) {
         return;
     }
 
+    warn("  [SIMULATION MODE] Files will be created in VFS only — no real binary is executed.\n\n");
     let pkgs = builtin_packages();
 
     // Find the package

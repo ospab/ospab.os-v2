@@ -108,7 +108,7 @@ pub fn init() {
             crate::core::scheduler::Priority::System,
             0,
             0,
-            64 * 1024,
+            0,
         ).unwrap_or(1);
 
         services.push(Service {
@@ -255,7 +255,7 @@ pub fn init() {
                         prio,
                         0,
                         0,
-                        64 * 1024,
+                        0,
                     ) {
                         svc.pid = pid;
                         svc.status = ServiceStatus::Running;
@@ -311,7 +311,7 @@ pub fn start_service(name: &str) -> bool {
                         prio,
                         0,
                         0,
-                        64 * 1024,
+                        0,
                     ) {
                         svc.pid = pid;
                         svc.status = ServiceStatus::Running;
@@ -521,29 +521,23 @@ fn cmd_status() {
 
 fn cmd_log() {
     putc("\n");
-    framebuffer::draw_string("  seed boot log\n", FG_WARN, BG);
-    putc("  ═════════════\n\n");
+    framebuffer::draw_string("  kernel boot log\n", FG_WARN, BG);
+    putc("  ═════════════════\n\n");
 
-    let entries = [
-        ("[  0.000] seed: init started", FG_OK),
-        ("[  0.001] Mounting root filesystem (RamFS)", FG),
-        ("[  0.002] Loading /etc/seed/init.conf", FG),
-        ("[  0.010] Starting service: kernel", FG_OK),
-        ("[  0.011] Starting service: vfs", FG_OK),
-        ("[  0.020] Starting service: scheduler", FG_OK),
-        ("[  0.021] Starting service: console", FG_OK),
-        ("[  0.022] Starting service: serial", FG_OK),
-        ("[  0.023] Starting service: keyboard", FG_OK),
-        ("[  0.030] Starting service: network", FG_OK),
-        ("[  0.040] Starting service: storage", FG_OK),
-        ("[  0.050] Starting service: plum", FG_OK),
-        ("[  0.051] seed: boot complete, all services started", FG_OK),
-    ];
+    let mut buf = [crate::klog::Event::empty_pub(); 32];
+    let n = crate::klog::last_events(&mut buf, 32);
 
-    for (msg, color) in entries.iter() {
-        putc("  ");
-        framebuffer::draw_string(msg, *color, BG);
-        putc("\n");
+    if n == 0 {
+        framebuffer::draw_string("  (no log entries)\n", FG_DIM, BG);
+    } else {
+        for i in 0..n {
+            let ev = &buf[i];
+            putc("  [");
+            framebuffer::draw_string(ev.source.label(), FG_DIM, BG);
+            putc("] ");
+            framebuffer::draw_string(ev.message(), FG, BG);
+            putc("\n");
+        }
     }
     putc("\n");
 }

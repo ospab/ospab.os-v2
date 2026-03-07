@@ -830,3 +830,87 @@ pub fn run_full_diagnostic() {
     }
     s("═══ END NETDIAG ═══\r\n\r\n");
 }
+
+/// Print a brief on-screen (framebuffer) network summary.
+/// Called from the terminal after run_full_diagnostic() so the user gets
+/// key results without having to read serial output.
+pub fn run_screen_summary() {
+    use crate::arch::x86_64::framebuffer;
+
+    const FG: u32     = 0x00FFFFFF;
+    const FG_OK: u32  = 0x0000FF00;
+    const FG_ERR: u32 = 0x00FF4444;
+    const FG_WARN: u32= 0x00FFCC00;
+    const FG_DIM: u32 = 0x00AAAAAA;
+    const BG: u32     = 0x00000000;
+
+    let p  = |s: &str| framebuffer::draw_string(s, FG, BG);
+    let ok = |s: &str| framebuffer::draw_string(s, FG_OK, BG);
+    let er = |s: &str| framebuffer::draw_string(s, FG_ERR, BG);
+    let wn = |s: &str| framebuffer::draw_string(s, FG_WARN, BG);
+    let dm = |s: &str| framebuffer::draw_string(s, FG_DIM, BG);
+
+    p("\n");
+    framebuffer::draw_string("  Network Diagnostics Summary\n", FG_WARN, BG);
+    dm("  ──────────────────────────────\n");
+
+    if !crate::net::is_up() {
+        er("  Status  : DOWN\n");
+        er("  No NIC detected or driver probe failed.\n");
+        er("  Check QEMU flags (-netdev/-device) and kernel build.\n\n");
+        return;
+    }
+
+    ok("  Status  : UP\n");
+
+    // Driver name
+    p("  Driver  : ");
+    p(crate::net::nic_name());
+    p("\n");
+
+    // MAC address
+    let mac = unsafe { crate::net::OUR_MAC };
+    {
+        let hex = b"0123456789abcdef";
+        p("  MAC     : ");
+        for i in 0..6usize {
+            framebuffer::draw_char(hex[(mac[i] >> 4) as usize] as char, FG, BG);
+            framebuffer::draw_char(hex[(mac[i] & 0xF) as usize] as char, FG, BG);
+            if i < 5 { p(":"); }
+        }
+        p("\n");
+    }
+
+    // IP address
+    let ip = unsafe { crate::net::OUR_IP };
+    p("  IP      : ");
+    p(&alloc::format!("{}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]));
+
+    // RX / TX packet counts
+    let rx = crate::net::rx_packets();
+    let tx = crate::net::tx_packets();
+    p("  RX pkts : ");
+    p(&alloc::format!("{}\n", rx));
+    p("  TX pkts : ");
+    p(&alloc::format!("{}\n", tx));
+
+    // Link status check for e1000
+    if crate::net::nic_name() == "Intel e1000" {
+        let (r0, _, _, _) = crate::net::diag();
+        if r0 & 2 == 0 {
+            wn("  Link    : DOWN (e1000 STATUS.LU=0)\n");
+        } else {
+            ok("  Link    : Up\n");
+        }
+    }
+
+    // Error rate heuristic: warn if we only ever sent but never received
+    if tx > 0 && rx == 0 {
+        wn("  Warning : TX active but 0 RX — possible link or routing issue\n");
+    } else if rx > 0 && tx == 0 {
+        wn("  Warning : RX active but 0 TX — driver may not be transmitting\n");
+    }
+
+    dm("\n  Full register dump written to COM1 serial output.\n\n");
+}
+

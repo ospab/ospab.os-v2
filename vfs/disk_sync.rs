@@ -63,9 +63,19 @@ const MAX_FS_BYTES: usize = 8 * 1024 * 1024;
 /// PIT fires at 100 Hz. Deferred write-back triggers 10 s after the last mutation.
 const DEFERRED_SYNC_TICKS: u64 = 1000;
 
-/// Tick counter at the time of the most recent RamFS mutation (0 = none pending).
+/// Tick counter at the time of the most recent RamFS mutation (u64::MAX = none pending).
 static LAST_DIRTY_TICK: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+    core::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Bytes written in the most recent successful sync_filesystem() call (0 = never synced).
+static LAST_SNAPSHOT_BYTES: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Returns the byte count of the last serialized RamFS snapshot written to disk.
+/// Zero if the filesystem has never been synced since boot.
+pub fn last_snapshot_bytes() -> usize {
+    LAST_SNAPSHOT_BYTES.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// Choose the primary persistence disk: prefer AHCI, else first disk.
 fn select_disk() -> Option<(usize, crate::drivers::DiskKind, usize)> {
@@ -362,8 +372,8 @@ pub fn deferred_tick() {
     }
     let now  = crate::arch::x86_64::idt::timer_ticks();
     let last = LAST_DIRTY_TICK.load(core::sync::atomic::Ordering::Relaxed);
-    if last == 0 || now.wrapping_sub(last) < DEFERRED_SYNC_TICKS {
-        return; // too soon
+    if last == u64::MAX || now.wrapping_sub(last) < DEFERRED_SYNC_TICKS {
+        return; // too soon or no pending dirty tick
     }
     sync_filesystem();
 }
@@ -397,7 +407,13 @@ pub fn sync_filesystem() -> bool {
     let total_bytes = sectors_needed * sector_size;
     let frames_needed = ((total_bytes + 4095) / 4096) as u64;
 
-    // Deterministic Memory Fabric: allocate/retain a dedicated MED token for serialization
+    // Deterministic Memory Fabric: allocate/retain a dedicated MED token for serialization.
+    // NOTE — intentional physical-frame retention: when the RamFS grows beyond the current
+    // buffer capacity, new frames are allocated and the previous token is replaced.  The old
+    // frames are NOT freed (the bump PMM has no free path).  This is acceptable because:
+    //   (a) RamFS rarely shrinks back after growth, so re-growth is unlikely.
+    //   (b) Each growth step wastes only ≤8 MiB (MAX_FS_BYTES) of physical frames.
+    //   (c) A proper slab allocator is planned for Phase 9+.
     static mut MED_BUF: Option<MedToken> = None;
     let med = unsafe {
         match &MED_BUF {
@@ -447,11 +463,15 @@ pub fn sync_filesystem() -> bool {
         crate::drivers::DiskKind::Ata => crate::drivers::read(global_idx, LBA_BASE, 1, &mut verify),
     };
     if !read_ok || verify.len() < 8 || u64::from_le_bytes(verify[0..8].try_into().unwrap_or_default()) != SUPER_MAGIC {
-        panic!("DISK_WRITE_VERIFICATION_FAILED");
+        crate::arch::x86_64::serial::write_str("[FS] write verification failed — superblock magic mismatch\r\n");
+        return false;
     }
 
-    // Mark filesystem clean — deferred_tick won't fire again until next mutation.
+    // Mark filesystem clean — reset sentinel so deferred_tick won't fire again until next mutation.
+    LAST_DIRTY_TICK.store(u64::MAX, core::sync::atomic::Ordering::Relaxed);
     super::ramfs::IS_DIRTY.store(false, core::sync::atomic::Ordering::Relaxed);
+    // Record the snapshot size so df can report real disk usage.
+    LAST_SNAPSHOT_BYTES.store(total_bytes, core::sync::atomic::Ordering::Relaxed);
 
     true
 }
