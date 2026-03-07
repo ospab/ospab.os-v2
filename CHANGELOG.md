@@ -5,6 +5,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.1.0] — 2026-03-07 — TCP Stack & Network Fixes
+
+### Added
+
+- **TCP stack** (`net/tcp.rs`) — complete RFC 793 implementation:
+  - Full state machine: Closed → SynSent / Listen → SynReceived → Established → FinWait1/2 → TimeWait / CloseWait → LastAck → Closed
+  - 3-way handshake (SYN / SYN-ACK / ACK), data transfer with seq/ack tracking
+  - FIN teardown (both active and passive close), RST handling in all states
+  - Retransmit timer (3 s), per-connection 8 KiB ring-buffer receive queue
+  - 16-slot connection table; no heap allocation — fully static
+  - Public API: `tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_recv_nb`, `tcp_close`
+- **IPv4 TCP dispatch** — protocol 6 now routed to `tcp::handle_tcp()` in `ipv4::handle_ipv4()`
+- **Hardware link detection** — real register reads instead of always-true:
+  - RTL8139: MediaStatusRegister (0x58) bit 2 (clear = link OK)
+  - Intel e1000: STATUS register bit 1 (LU — Link Up)
+  - RTL8169: PHY Status register (0x6C) bit 1
+- **`net::link_up()`** — dispatches to active NIC's hardware check
+- **RX/TX byte counters** — `net::rx_bytes()` / `net::tx_bytes()` atomics updated on every frame
+- **`traceroute`** (`axon net_tools`) — ICMP TTL-based route discovery with `-m`/`-w` flags
+
+### Fixed
+
+- **`ifconfig` / `ip`** — no longer prints hardcoded `UP BROADCAST RUNNING MULTICAST`:
+  - Interface name is the real driver name (RTL8139 / Intel e1000 / RTL8169/8111)
+  - UP / DOWN flag derived from hardware link register
+  - Broadcast-MAC gateway fallback annotated as `(broadcast fallback)` when ARP times out
+  - RX/TX packet and byte counters displayed
+- **`netstat`** — Status column now reflects actual hardware link state (was always "Up")
+- **`signal_pid` / `signal_thread`** — dispatch on signal number: SIGCONT→Ready, SIGSTOP→Waiting, others→Dead
+- **`env CMD`** — correctly parses `KEY=VAL` overrides, dispatches command, restores environment
+- **`tomato --tmt pack`** — prints `[SIMULATION MODE]` warning for empty package manifests
+- **Various display stubs** — removed false indicators from `seed log`, `df`, `top`, `netdiag`
+
+### Changed
+
+- `net/mod.rs` — added `pub mod tcp`, `link_up()`, `rx_bytes()`, `tx_bytes()`
+- Version bump: 1.0.0 → 1.1.0
+
+---
+
 ## [1.0.0] — 2026-03-05 — First Public Release
 
 The first stable release of the AETERNA microkernel. Boots from a hybrid BIOS/UEFI Live ISO via
