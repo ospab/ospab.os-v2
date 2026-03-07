@@ -13,6 +13,7 @@ pub mod arp;
 pub mod ipv4;
 pub mod icmp;
 pub mod udp;
+pub mod tcp;
 pub mod sntp;
 pub mod resolver;
 
@@ -46,10 +47,25 @@ static mut ACTIVE_NIC: u8 = 0;
 // Packet counters
 static RX_PKTS: AtomicU64 = AtomicU64::new(0);
 static TX_PKTS: AtomicU64 = AtomicU64::new(0);
+// Byte counters
+static RX_BYTES: AtomicU64 = AtomicU64::new(0);
+static TX_BYTES: AtomicU64 = AtomicU64::new(0);
 
 pub fn is_up() -> bool { NET_UP.load(Ordering::Relaxed) }
 pub fn rx_packets() -> u64 { RX_PKTS.load(Ordering::Relaxed) }
 pub fn tx_packets() -> u64 { TX_PKTS.load(Ordering::Relaxed) }
+pub fn rx_bytes() -> u64 { RX_BYTES.load(Ordering::Relaxed) }
+pub fn tx_bytes() -> u64 { TX_BYTES.load(Ordering::Relaxed) }
+
+/// Check actual hardware link state from the active NIC.
+pub fn link_up() -> bool {
+    if !is_up() { return false; }
+    match unsafe { ACTIVE_NIC } {
+        0 => rtl8139::link_up(),
+        1 => e1000::link_up(),
+        _ => rtl8169::link_up(),
+    }
+}
 
 /// Initialize the network stack. Call after PCI scan.
 pub fn init() -> bool {
@@ -140,6 +156,7 @@ pub fn poll_rx() {
             while let Some((buf, len)) = rtl8139::receive_packet() {
                 if len < 14 { continue; }
                 RX_PKTS.fetch_add(1, Ordering::Relaxed);
+                RX_BYTES.fetch_add(len as u64, Ordering::Relaxed);
                 ethernet::handle_frame(&buf[..len]);
             }
         }
@@ -147,6 +164,7 @@ pub fn poll_rx() {
             while let Some((buf, len)) = e1000::receive_packet() {
                 if len < 14 { continue; }
                 RX_PKTS.fetch_add(1, Ordering::Relaxed);
+                RX_BYTES.fetch_add(len as u64, Ordering::Relaxed);
                 ethernet::handle_frame(&buf[..len]);
             }
         }
@@ -154,6 +172,7 @@ pub fn poll_rx() {
             while let Some((buf, len)) = rtl8169::receive_packet() {
                 if len < 14 { continue; }
                 RX_PKTS.fetch_add(1, Ordering::Relaxed);
+                RX_BYTES.fetch_add(len as u64, Ordering::Relaxed);
                 ethernet::handle_frame(&buf[..len]);
             }
         }
@@ -163,6 +182,7 @@ pub fn poll_rx() {
 /// Send a raw Ethernet frame
 pub fn send_raw(buf: &[u8], len: usize) {
     TX_PKTS.fetch_add(1, Ordering::Relaxed);
+    TX_BYTES.fetch_add(len as u64, Ordering::Relaxed);
     match unsafe { ACTIVE_NIC } {
         0 => rtl8139::send_packet(buf, len),
         1 => e1000::send_packet(buf, len),

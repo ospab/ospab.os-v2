@@ -5,6 +5,7 @@
  */
 
 const PROTO_ICMP: u8 = 1;
+const PROTO_TCP: u8  = 6;
 const PROTO_UDP: u8  = 17;
 
 /// Handle an incoming IPv4 packet (Ethernet payload)
@@ -32,6 +33,7 @@ pub fn handle_ipv4(data: &[u8]) {
 
     match protocol {
         PROTO_ICMP => super::icmp::handle_icmp(payload, _src_ip, ttl),
+        PROTO_TCP  => super::tcp::handle_tcp(payload, _src_ip),
         PROTO_UDP  => super::udp::handle_udp(payload, _src_ip),
         _ => {}
     }

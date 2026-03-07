@@ -723,6 +723,13 @@ pub fn diag_regs() -> (u32, u32, u32, u32) {
     )
 }
 
+/// Check hardware link state.
+/// e1000 STATUS register bit 1 (LU) = Link Up.
+pub fn link_up() -> bool {
+    if !is_initialized() { return false; }
+    (read_reg(REG_STATUS) & STATUS_LU) != 0
+}
+
 // ─── Serial debug helpers ─────────────────────────────────────────────────
 fn serial_hex_byte(v: u8) {
     let h = b"0123456789abcdef";

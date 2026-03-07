@@ -1160,7 +1160,11 @@ fn cmd_netstat(_args: &str) {
     puts(&ip_s);
     for _ in 0..(16usize.saturating_sub(ip_s.len())) { puts(" "); }
 
-    ok("Up");
+    if net::link_up() {
+        ok("Up");
+    } else {
+        err("Down");
+    }
     puts("      ");
     let rx_s = format!("{}", rx);
     puts(&rx_s);

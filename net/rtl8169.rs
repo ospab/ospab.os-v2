@@ -420,6 +420,15 @@ pub fn handle_irq() {
     }
 }
 
+/// Check hardware link state.
+/// RTL8169 PHY Status register (offset 0x6C) bit 1 = Link OK.
+pub fn link_up() -> bool {
+    if !is_initialized() { return false; }
+    let io = unsafe { IO_BASE };
+    let phystatus = inb(io + 0x6C);
+    (phystatus & 0x02) != 0
+}
+
 // ─── Serial debug helpers ─────────────────────────────────────────────────
 fn serial_hex_byte(v: u8) {
     let h = b"0123456789abcdef";

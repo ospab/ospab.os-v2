@@ -1794,11 +1794,11 @@ fn cmd_ifconfig() {
     let mac = unsafe { ospab_os::net::OUR_MAC };
     let gw_mac = unsafe { ospab_os::net::GATEWAY_MAC };
     let driver = ospab_os::net::nic_name(); // "RTL8139" / "Intel e1000" / "RTL8169/8111"
+    let hw_link = ospab_os::net::link_up();
 
     // Interface name line with driver
-    puts("eth0      Link encap:Ethernet  Driver:");
     puts(driver);
-    puts("\n");
+    puts("     Link encap:Ethernet\n");
     puts("          HWaddr ");
     print_mac(mac);
     puts("\n");
@@ -1811,8 +1811,33 @@ fn cmd_ifconfig() {
     print_ip(gw);
     puts("  GW MAC:");
     print_mac(gw_mac);
+    // Annotate broadcast fallback
+    if gw_mac == [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF] {
+        dim_print(" (broadcast fallback)");
+    }
     puts("\n");
-    puts("          UP BROADCAST RUNNING MULTICAST  MTU:1500\n");
+    // Real flags derived from hardware state
+    if hw_link {
+        framebuffer::draw_string("          UP", FG_OK, BG);
+    } else {
+        err_print("          DOWN");
+    }
+    puts(" BROADCAST MULTICAST  MTU:1500\n");
+    // Byte/packet counters
+    let rx_p = ospab_os::net::rx_packets();
+    let tx_p = ospab_os::net::tx_packets();
+    let rx_b = ospab_os::net::rx_bytes();
+    let tx_b = ospab_os::net::tx_bytes();
+    puts("          RX packets:");
+    print_u64(rx_p);
+    puts("  bytes:");
+    print_u64(rx_b);
+    puts("\n");
+    puts("          TX packets:");
+    print_u64(tx_p);
+    puts("  bytes:");
+    print_u64(tx_b);
+    puts("\n");
 }
 
 fn cmd_ping(args: &str) {

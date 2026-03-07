@@ -409,6 +409,16 @@ pub fn handle_irq() {
     }
 }
 
+/// Check hardware link state.
+/// RTL8139 MediaStatusRegister (offset 0x58): bit 2 clear = link up.
+pub fn link_up() -> bool {
+    unsafe {
+        if !INITIALIZED { return false; }
+        let msr = inb(IO_BASE + 0x58);
+        (msr & 0x04) == 0 // bit 2 clear = link OK
+    }
+}
+
 /// Read NIC status registers for diagnostics (ISR, CMD, CBR, CAPR)
 pub fn diag() -> (u16, u8, u16, u16) {
     unsafe {
