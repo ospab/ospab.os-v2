@@ -123,11 +123,12 @@ fn build_client_hello(client_random: &[u8; 32], hostname: &str) -> Vec<u8> {
     // Session ID length = 0
     hs.push(0);
 
-    // Cipher suites: GCM preferred, then CBC ECDHE, then CBC RSA
-    hs.push(0x00); hs.push(0x06); // 6 bytes = 3 suites
+    // Cipher suites: GCM preferred → CBC ECDHE → CBC RSA; RFC 5746 SCSV mandatory
+    hs.push(0x00); hs.push(0x08); // 8 bytes = 4 entries
     hs.push(0xC0); hs.push(0x2B); // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
     hs.push(0xC0); hs.push(0x27); // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
-    hs.push(0x00); hs.push(0x3C); // TLS_RSA_WITH_AES_128_CBC_SHA256 (fallback)
+    hs.push(0x00); hs.push(0x3C); // TLS_RSA_WITH_AES_128_CBC_SHA256
+    hs.push(0x00); hs.push(0xFF); // TLS_EMPTY_RENEGOTIATION_INFO_SCSV (RFC 5746)
 
     // Compression methods: null only
     hs.push(0x01); // 1 method
@@ -179,6 +180,19 @@ fn build_client_hello(client_random: &[u8; 32], hostname: &str) -> Vec<u8> {
         exts.push((algs_len >> 8) as u8); exts.push(algs_len as u8);
         exts.extend_from_slice(sig_algs);
     }
+
+    // extended_master_secret (type 0x0017) — RFC 7627, no data
+    exts.push(0x00); exts.push(0x17);
+    exts.push(0x00); exts.push(0x00);
+
+    // session_ticket (type 0x0023) — empty, signals TLS ticket support
+    exts.push(0x00); exts.push(0x23);
+    exts.push(0x00); exts.push(0x00);
+
+    // renegotiation_info (type 0xFF01) — empty body = initial connection (RFC 5746)
+    exts.push(0xFF); exts.push(0x01);
+    exts.push(0x00); exts.push(0x01); // extension data length = 1
+    exts.push(0x00);                  // renegotiated_connection length = 0
 
     // Extensions total length
     hs.push((exts.len() >> 8) as u8);
@@ -380,6 +394,27 @@ fn tls_connect_inner(tcp_conn: usize, hostname: &str) -> Result<TlsConn, &'stati
             .ok_or("TLS: timeout waiting for server")?;
 
         if ct == record::CT_ALERT {
+            if payload.len() >= 2 {
+                let desc = match payload[1] {
+                    0  => "close_notify",
+                    10 => "unexpected_message",
+                    20 => "bad_record_mac",
+                    40 => "handshake_failure",
+                    42 => "bad_certificate",
+                    44 => "certificate_unknown",
+                    45 => "illegal_parameter",
+                    47 => "illegal_parameter(47)",
+                    48 => "unknown_ca",
+                    70 => "protocol_version",
+                    71 => "insufficient_security",
+                    80 => "internal_error",
+                    86 => "inappropriate_fallback",
+                    90 => "user_canceled",
+                    _  => "unknown",
+                };
+                s(if payload[0] == 1 { "[TLS] Alert: warning/" } else { "[TLS] Alert: fatal/" });
+                s(desc); s("\r\n");
+            }
             return Err("TLS: server sent alert");
         }
         if ct != record::CT_HANDSHAKE { continue; }
