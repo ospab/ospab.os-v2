@@ -199,6 +199,65 @@ fn parse_response(data: &[u8], expected_id: u16) -> Option<[u8; 4]> {
     None
 }
 
+fn parse_nameserver_line(line: &[u8]) -> Option<[u8; 4]> {
+    let mut i = 0usize;
+    while i < line.len() && (line[i] == b' ' || line[i] == b'\t') { i += 1; }
+    if i >= line.len() { return None; }
+    if line[i] == b'#' { return None; }
+
+    const KEY: &[u8] = b"nameserver";
+    if i + KEY.len() > line.len() { return None; }
+    if !line[i..i + KEY.len()].eq_ignore_ascii_case(KEY) { return None; }
+    i += KEY.len();
+
+    while i < line.len() && (line[i] == b' ' || line[i] == b'\t') { i += 1; }
+    if i >= line.len() { return None; }
+
+    let start = i;
+    while i < line.len() && line[i] != b' ' && line[i] != b'\t' && line[i] != b'#' && line[i] != b'\r' {
+        i += 1;
+    }
+    if i <= start { return None; }
+
+    let ip_str = core::str::from_utf8(&line[start..i]).ok()?;
+    crate::net::resolver::parse_ipv4(ip_str)
+}
+
+fn collect_dns_servers(out: &mut [[u8; 4]; 6]) -> usize {
+    let mut count = 0usize;
+    let mut push_unique = |ip: [u8; 4], out: &mut [[u8; 4]; 6], count: &mut usize| {
+        if *count >= out.len() || ip == [0, 0, 0, 0] { return; }
+        for i in 0..*count {
+            if out[i] == ip { return; }
+        }
+        out[*count] = ip;
+        *count += 1;
+    };
+
+    // 1) Linux-style resolver file
+    if let Some(data) = crate::fs::read_file("/etc/resolv.conf")
+        .or_else(|| crate::fs::read_file("/etc/resolve"))
+    {
+        for line in data.split(|&b| b == b'\n') {
+            if let Some(ip) = parse_nameserver_line(line) {
+                push_unique(ip, out, &mut count);
+            }
+        }
+    }
+
+    // 2) DHCP-provided DNS as fallback
+    let dhcp_dns = unsafe { super::DNS_IP };
+    push_unique(dhcp_dns, out, &mut count);
+
+    // 3) Hard fallback defaults
+    push_unique([1, 1, 1, 1], out, &mut count);
+    push_unique([1, 0, 0, 1], out, &mut count);
+    push_unique([8, 8, 8, 8], out, &mut count);
+    push_unique([8, 8, 4, 4], out, &mut count);
+
+    count
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────
 
 /// Resolve a hostname to an IPv4 address via DNS.
@@ -216,9 +275,9 @@ pub fn resolve(name: &str) -> Option<[u8; 4]> {
         return Some(ip);
     }
 
-    let dns_ip = unsafe { super::DNS_IP };
-    // If DNS server is 0.0.0.0, DHCP didn't provide one
-    if dns_ip == [0, 0, 0, 0] { return None; }
+    let mut servers = [[0u8; 4]; 6];
+    let server_count = collect_dns_servers(&mut servers);
+    if server_count == 0 { return None; }
 
     let query_id = DNS_QUERY_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -230,34 +289,32 @@ pub fn resolve(name: &str) -> Option<[u8; 4]> {
     let qlen = build_query(name, query_id, &mut qbuf);
     if qlen == 0 { return None; }
 
-    for attempt in 0u8..3 {
-        let timeout = 300u64 * (1 + attempt as u64); // 3s, 6s, 9s
+    for si in 0..server_count {
+        let dns_ip = servers[si];
+        for attempt in 0u8..2 {
+            let timeout = 300u64 * (1 + attempt as u64); // 3s, 6s
 
-        DNS_RX_READY.store(false, Ordering::Release);
-        super::udp::send_udp(dns_ip, src_port, 53, &qbuf[..qlen]);
+            DNS_RX_READY.store(false, Ordering::Release);
+            super::udp::send_udp(dns_ip, src_port, 53, &qbuf[..qlen]);
 
-        // Wait for response
-        let start = crate::arch::x86_64::idt::timer_ticks();
-        loop {
-            super::poll_rx();
-            if DNS_RX_READY.load(Ordering::Acquire) {
-                DNS_RX_READY.store(false, Ordering::Release);
-                let len = unsafe { DNS_RX_LEN };
-                let data = unsafe { &DNS_RX_BUF[..len] };
-                if let Some(ip) = parse_response(data, query_id) {
-                    cache_insert(name, ip);
-                    DNS_SRC_PORT.store(0, Ordering::Relaxed);
-                    return Some(ip);
+            // Wait for response
+            let start = crate::arch::x86_64::idt::timer_ticks();
+            loop {
+                super::poll_rx();
+                if DNS_RX_READY.load(Ordering::Acquire) {
+                    DNS_RX_READY.store(false, Ordering::Release);
+                    let len = unsafe { DNS_RX_LEN };
+                    let data = unsafe { &DNS_RX_BUF[..len] };
+                    if let Some(ip) = parse_response(data, query_id) {
+                        cache_insert(name, ip);
+                        DNS_SRC_PORT.store(0, Ordering::Relaxed);
+                        return Some(ip);
+                    }
                 }
+                let now = crate::arch::x86_64::idt::timer_ticks();
+                if now.saturating_sub(start) >= timeout { break; }
+                unsafe { core::arch::asm!("hlt"); }
             }
-            let now = crate::arch::x86_64::idt::timer_ticks();
-            if now.saturating_sub(start) >= timeout { break; }
-            unsafe { core::arch::asm!("hlt"); }
-        }
-
-        // Log retry
-        if attempt < 2 {
-            crate::arch::x86_64::serial::write_str("[DNS] retry...\r\n");
         }
     }
 

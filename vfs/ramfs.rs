@@ -126,6 +126,22 @@ pub fn init() {
             )),
         );
 
+        // /etc/resolv.conf (Linux-compatible DNS resolver config)
+        tree.insert(
+            String::from("/etc/resolv.conf"),
+            RamNode::File(Vec::from(
+                b"# AETERNA DNS resolver config\n# Managed manually\nnameserver 1.1.1.1\nnameserver 1.0.0.1\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n" as &[u8],
+            )),
+        );
+
+        // /etc/resolve (compat alias requested by user)
+        tree.insert(
+            String::from("/etc/resolve"),
+            RamNode::File(Vec::from(
+                b"# alias of resolv.conf format\nnameserver 1.1.1.1\nnameserver 1.0.0.1\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n" as &[u8],
+            )),
+        );
+
         // /etc/timezone
         tree.insert(
             String::from("/etc/timezone"),
